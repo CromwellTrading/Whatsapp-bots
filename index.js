@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const cron = require('node-cron');
@@ -110,9 +110,8 @@ async function connectToWhatsApp() {
 
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true, // Mostrar QR en consola como respaldo
         logger: pino({ level: 'error' }), // Solo mostrar errores importantes
-        browser: ["REFERI MILLOBET", "Chrome", "20.0.0"]
+        browser: Browsers.macOS('Desktop') // Conexión estándar para evitar rechazos de WhatsApp
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -121,11 +120,9 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log("✅ QR recibido, generando código...");
+            console.log("✅ QR recibido, generando código para la web...");
             qrActual = await qrcode.toDataURL(qr);
-            console.log("QR generado para web. Escanéalo en tu teléfono.");
-            // También mostramos el QR en consola por si la web no funciona
-            console.log(qr);
+            console.log("Escanea el QR desde la dirección de tu servidor web.");
         }
 
         if (connection === 'close') {
@@ -136,6 +133,10 @@ async function connectToWhatsApp() {
                 setTimeout(connectToWhatsApp, 10000); // Esperar 10 segundos
             } else {
                 console.log('SESIÓN CERRADA MANUALMENTE DESDE EL TELÉFONO.');
+                // Limpiar la sesión actual si se cierra manualmente
+                if (fs.existsSync('./auth_info_baileys')) {
+                    fs.rmSync('./auth_info_baileys', { recursive: true, force: true });
+                }
             }
         } else if (connection === 'open') {
             estaConectado = true;
@@ -249,7 +250,6 @@ async function connectToWhatsApp() {
             }
 
             // === COMANDO: !addtask [ID_Grupo] [HH:MM o Minutos] [Mensaje] ===
-            // También alias: !setreplygroup
             if (command === 'addtask' || command === 'setreplygroup') {
                 const targetId = args[0];
                 const timeVal = args[1];
@@ -297,7 +297,6 @@ async function connectToWhatsApp() {
             }
 
             // === COMANDO: !addstatus [HH:MM o Minutos] [Mensaje] ===
-            // También alias: !setreplystatus
             if (command === 'addstatus' || command === 'setreplystatus') {
                 const timeVal = args[0];
                 const texto = args.slice(1).join(' ');
@@ -553,7 +552,7 @@ app.get('/', (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`🌐 Servidor web escuchando en http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`));
 
 // Iniciar el sistema principal
 connectToWhatsApp();
