@@ -10,7 +10,7 @@ const qrcode = require('qrcode');
 // ============================================================================
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ZONA_HORARIA = "America/Havana"; // Vital para que los cron coincidan con la hora local
+const ZONA_HORARIA = "America/Havana"; // Cambiar según tu zona horaria
 const MEDIA_DIR = './media';
 const DB_FILE = './database.json';
 
@@ -18,7 +18,7 @@ let qrActual = '';
 let estaConectado = false;
 let scheduledJobs = {}; // Almacena los procesos de cron activos en memoria
 
-// Crear directorio de medios si no existe (evita errores al guardar fotos)
+// Crear directorio de medios si no existe
 if (!fs.existsSync(MEDIA_DIR)) {
     fs.mkdirSync(MEDIA_DIR);
 }
@@ -27,14 +27,15 @@ if (!fs.existsSync(MEDIA_DIR)) {
 // 2. GESTIÓN DE LA BASE DE DATOS (JSON LOCAL)
 // ============================================================================
 let db = {
-    autoReply: { 
-        active: false, 
-        text: "Hola, en este momento estoy offline. Te responderé en cuanto esté disponible.", 
-        startHour: 23, 
-        endHour: 8, 
-        repliedToday: [] 
+    autoReply: {
+        active: false,
+        text: "Hola, en este momento estoy offline. Te responderé en cuanto esté disponible.",
+        startHour: 23,
+        endHour: 8,
+        repliedToday: []
     },
-    tasks: [] // Estructura: { targetId, cronTime, message, mediaPath, isInterval, enabled }
+    tasks: [], // Estructura: { targetId, cronTime, message, mediaPath, isInterval, enabled }
+    logGroups: false // Nuevo: activar/desactivar registro de mensajes de grupos
 };
 
 // Cargar DB al iniciar
@@ -42,6 +43,8 @@ if (fs.existsSync(DB_FILE)) {
     try {
         const rawData = fs.readFileSync(DB_FILE);
         db = JSON.parse(rawData);
+        // Asegurar que exista la propiedad logGroups
+        if (db.logGroups === undefined) db.logGroups = false;
     } catch (error) {
         console.error("Error leyendo database.json. Se usará la DB por defecto.", error);
     }
@@ -67,7 +70,7 @@ function iniciarCronJobs(sock) {
         scheduledJobs[index] = cron.schedule(task.cronTime, async () => {
             try {
                 let content = {};
-                
+
                 // Verificar si la tarea tiene una imagen adjunta y si el archivo aún existe
                 if (task.mediaPath && fs.existsSync(task.mediaPath)) {
                     const buffer = fs.readFileSync(task.mediaPath);
@@ -78,7 +81,6 @@ function iniciarCronJobs(sock) {
 
                 // Enviar el mensaje (Si es estado, requiere formato especial)
                 if (task.targetId === 'status@broadcast') {
-                    // Los estados se envían al broadcast pero requieren definirse como statusJidList
                     await sock.sendMessage('status@broadcast', content, { statusJidList: [sock.user.id] });
                     console.log(`[Cron] Estado automático publicado a las ${new Date().toLocaleTimeString()}`);
                 } else {
@@ -88,7 +90,7 @@ function iniciarCronJobs(sock) {
             } catch (error) {
                 console.error(`[Error] Fallo al ejecutar la tarea ${index}:`, error);
             }
-        }, { timezone: ZONA_HORARIA }); // Aplicar zona horaria a cada tarea individual
+        }, { timezone: ZONA_HORARIA });
     });
 
     // 3. Cron fijo interno: Resetear la lista de personas que ya recibieron auto-respuesta
@@ -105,38 +107,41 @@ function iniciarCronJobs(sock) {
 // ============================================================================
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    
+
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,
-        logger: pino({ level: 'silent' }), // Silencia los logs internos de Baileys
-        browser: ["REFERI MILLOBET", "Chrome", "20.0.0"] // Identificación del bot
+        printQRInTerminal: true, // Mostrar QR en consola como respaldo
+        logger: pino({ level: 'error' }), // Solo mostrar errores importantes
+        browser: ["REFERI MILLOBET", "Chrome", "20.0.0"]
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
+
         if (qr) {
+            console.log("✅ QR recibido, generando código...");
             qrActual = await qrcode.toDataURL(qr);
-            console.log('>>> NUEVO QR GENERADO. Accede a la web para escanearlo.');
+            console.log("QR generado para web. Escanéalo en tu teléfono.");
+            // También mostramos el QR en consola por si la web no funciona
+            console.log(qr);
         }
-        
+
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
             estaConectado = false;
-            console.log('>>> CONEXIÓN CERRADA. ¿Debe reconectar?:', shouldReconnect);
+            console.log('CONEXIÓN CERRADA. ¿Debe reconectar?:', shouldReconnect);
             if (shouldReconnect) {
-                setTimeout(connectToWhatsApp, 5000); // Esperar 5 seg antes de reconectar
+                setTimeout(connectToWhatsApp, 10000); // Esperar 10 segundos
             } else {
-                console.log('>>> SESIÓN CERRADA MANUALMENTE DESDE EL TELÉFONO.');
+                console.log('SESIÓN CERRADA MANUALMENTE DESDE EL TELÉFONO.');
             }
         } else if (connection === 'open') {
             estaConectado = true;
-            qrActual = ''; 
-            console.log('>>> ¡BOT CONECTADO EXITOSAMENTE!');
-            iniciarCronJobs(sock); 
+            qrActual = '';
+            console.log('¡BOT CONECTADO EXITOSAMENTE!');
+            iniciarCronJobs(sock);
         }
     });
 
@@ -144,19 +149,65 @@ async function connectToWhatsApp() {
     // 5. PROCESAMIENTO DE MENSAJES Y COMANDOS
     // ============================================================================
     sock.ev.on('messages.upsert', async (m) => {
-        if (m.type !== 'notify') return; 
+        if (m.type !== 'notify') return;
         const msg = m.messages[0];
         if (!msg.message) return;
 
         const remoteJid = msg.key.remoteJid;
         const isFromMe = msg.key.fromMe;
         const isGroup = remoteJid.endsWith('@g.us');
-        
+
         // Extraer texto dependiendo de si el mensaje tiene imagen, si es citado, o si es texto normal
-        const textMessage = msg.message.conversation || 
-                            msg.message.extendedTextMessage?.text || 
-                            msg.message.imageMessage?.caption || 
-                            msg.message.videoMessage?.caption || "";
+        const textMessage = msg.message.conversation ||
+            msg.message.extendedTextMessage?.text ||
+            msg.message.imageMessage?.caption ||
+            msg.message.videoMessage?.caption || "";
+
+        // ------------------------------------------------------------------------
+        // REGISTRO DE MENSAJES DE GRUPOS (LOGS EN CHAT PRIVADO)
+        // ------------------------------------------------------------------------
+        if (isGroup && !isFromMe && db.logGroups) {
+            // Obtener información del grupo (nombre)
+            let groupName = remoteJid;
+            try {
+                const groupMetadata = await sock.groupMetadata(remoteJid);
+                groupName = groupMetadata.subject;
+            } catch (err) {
+                console.error("Error obteniendo metadata del grupo:", err);
+            }
+
+            // Obtener nombre del remitente
+            let senderName = remoteJid.split('@')[0]; // por defecto el número
+            if (msg.key.participant) {
+                try {
+                    const contact = await sock.contactQuery(msg.key.participant);
+                    senderName = contact.notify || contact.name || msg.key.participant.split('@')[0];
+                } catch (err) {
+                    senderName = msg.key.participant.split('@')[0];
+                }
+            }
+
+            // Construir contenido del mensaje para el log
+            let logContent = `📢 *Grupo:* ${groupName}\n👤 *De:* ${senderName}\n`;
+
+            // Detectar tipo de mensaje
+            if (textMessage) {
+                logContent += `💬 *Mensaje:* ${textMessage}`;
+            } else if (msg.message.imageMessage) {
+                logContent += `🖼️ *Imagen* (caption: ${msg.message.imageMessage.caption || 'sin texto'})`;
+            } else if (msg.message.videoMessage) {
+                logContent += `🎥 *Video* (caption: ${msg.message.videoMessage.caption || 'sin texto'})`;
+            } else if (msg.message.documentMessage) {
+                logContent += `📄 *Documento*: ${msg.message.documentMessage.fileName || 'archivo'}`;
+            } else if (msg.message.audioMessage) {
+                logContent += `🎵 *Audio*`;
+            } else {
+                logContent += `📨 *Otro tipo de mensaje*`;
+            }
+
+            // Enviar el log al chat del dueño (su propio número)
+            await sock.sendMessage(sock.user.id, { text: logContent });
+        }
 
         // ------------------------------------------------------------------------
         // SISTEMA DE AUTO-RESPUESTA INBOX (Modo Dormir)
@@ -165,9 +216,9 @@ async function connectToWhatsApp() {
             const horaActualStr = new Date().toLocaleString("en-US", { timeZone: ZONA_HORARIA, hour: 'numeric', hour12: false });
             const horaActual = parseInt(horaActualStr);
             const { startHour, endHour, repliedToday, text } = db.autoReply;
-            
+
             // Lógica para detectar si la hora actual está dentro del horario de dormir (cruza medianoche)
-            const isSleepingTime = startHour > endHour 
+            const isSleepingTime = startHour > endHour
                 ? (horaActual >= startHour || horaActual < endHour)
                 : (horaActual >= startHour && horaActual < endHour);
 
@@ -175,6 +226,7 @@ async function connectToWhatsApp() {
                 await sock.sendMessage(remoteJid, { text: text }, { quoted: msg });
                 db.autoReply.repliedToday.push(remoteJid);
                 saveDB();
+                console.log(`[AutoReply] Respuesta enviada a ${remoteJid}`);
             }
         }
 
@@ -185,35 +237,32 @@ async function connectToWhatsApp() {
             const args = textMessage.slice(1).trim().split(/ +/);
             const command = args.shift().toLowerCase();
 
-            // === COMANDO: !grupos ===
-            // Lista todos los grupos con su nombre real y su ID interno
-            if (command === 'grupos') {
+            // === COMANDO: !grupos (o !detectid) ===
+            if (command === 'grupos' || command === 'detectid') {
                 const groups = await sock.groupFetchAllParticipating();
-                let lista = "*Tus Grupos Activos:*\n";
-                Object.values(groups).forEach(g => { 
-                    lista += `\n👥 *${g.subject}*\n🆔 \`${g.id}\`\n`; 
+                let lista = "*📋 Tus Grupos Activos:*\n";
+                Object.values(groups).forEach(g => {
+                    lista += `\n👥 *${g.subject}*\n🆔 \`${g.id}\`\n`;
                 });
+                if (Object.keys(groups).length === 0) lista = "No estás en ningún grupo.";
                 await sock.sendMessage(remoteJid, { text: lista });
             }
 
-            // === COMANDO: !addtask [ID] [Hora o Intervalo] [Texto] ===
-            // === COMANDO: !addstatus [Hora o Intervalo] [Texto] ===
-            if (command === 'addtask' || command === 'addstatus') {
-                const targetId = command === 'addstatus' ? 'status@broadcast' : args[0];
-                const timeVal = command === 'addstatus' ? args[0] : args[1];
-                const texto = command === 'addstatus' ? args.slice(1).join(' ') : args.slice(2).join(' ');
-
+            // === COMANDO: !addtask [ID_Grupo] [HH:MM o Minutos] [Mensaje] ===
+            // También alias: !setreplygroup
+            if (command === 'addtask' || command === 'setreplygroup') {
+                const targetId = args[0];
+                const timeVal = args[1];
+                const texto = args.slice(2).join(' ');
                 if (!targetId || !timeVal || !texto) {
-                    return sock.sendMessage(remoteJid, { text: "❌ Formato incorrecto.\nUso: !addtask [ID_Grupo] [HH:MM o Minutos] [Mensaje]" });
+                    return sock.sendMessage(remoteJid, { text: "❌ Formato: !addtask [ID_Grupo] [HH:MM o Minutos] [Mensaje]" });
                 }
 
-                let cronExp;
-                let isInterval = false;
-
-                // Detectar si el usuario introdujo una hora exacta (ej. 14:30) o un intervalo (ej. 20)
+                let cronExp, isInterval;
                 if (timeVal.includes(':')) {
                     const [h, m] = timeVal.split(':');
                     cronExp = `${m} ${h} * * *`;
+                    isInterval = false;
                 } else {
                     cronExp = `*/${timeVal} * * * *`;
                     isInterval = true;
@@ -221,44 +270,88 @@ async function connectToWhatsApp() {
 
                 let mediaPath = null;
                 const quotedMsg = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
-                
-                // Si el mensaje responde a una imagen, descargarla y guardarla
                 if (quotedMsg?.imageMessage) {
                     try {
                         const fakeMsg = { key: msg.message.extendedTextMessage.contextInfo.stanzaId, message: quotedMsg };
-                        const buffer = await downloadMediaMessage(fakeMsg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                        const buffer = await downloadMediaMessage(fakeMsg, 'buffer', {}, { logger: pino({ level: 'error' }) });
                         mediaPath = `${MEDIA_DIR}/img_${Date.now()}.jpg`;
                         fs.writeFileSync(mediaPath, buffer);
                     } catch (error) {
-                        return sock.sendMessage(remoteJid, { text: "❌ Hubo un error al guardar la imagen de la tarea." });
+                        return sock.sendMessage(remoteJid, { text: "❌ Error al guardar la imagen." });
                     }
                 }
 
-                db.tasks.push({ 
-                    targetId, 
-                    cronTime: cronExp, 
-                    message: texto, 
-                    mediaPath, 
+                db.tasks.push({
+                    targetId,
+                    cronTime: cronExp,
+                    message: texto,
+                    mediaPath,
                     isInterval,
-                    enabled: true 
+                    enabled: true
                 });
-                saveDB(); 
+                saveDB();
                 iniciarCronJobs(sock);
-                
-                let resText = `✅ Tarea guardada correctamente.\n📍 Destino: ${targetId === 'status@broadcast' ? 'Estados' : 'Grupo'}\n⏱️ Se enviará: ${isInterval ? `Cada ${timeVal} minutos` : `A las ${timeVal} hrs`}.`;
+
+                let resText = `✅ Tarea guardada.\n📍 Grupo: ${targetId}\n⏱️ ${isInterval ? `Cada ${timeVal} minutos` : `A las ${timeVal} hrs`}.`;
+                await sock.sendMessage(remoteJid, { text: resText });
+            }
+
+            // === COMANDO: !addstatus [HH:MM o Minutos] [Mensaje] ===
+            // También alias: !setreplystatus
+            if (command === 'addstatus' || command === 'setreplystatus') {
+                const timeVal = args[0];
+                const texto = args.slice(1).join(' ');
+                if (!timeVal || !texto) {
+                    return sock.sendMessage(remoteJid, { text: "❌ Formato: !addstatus [HH:MM o Minutos] [Mensaje]" });
+                }
+
+                let cronExp, isInterval;
+                if (timeVal.includes(':')) {
+                    const [h, m] = timeVal.split(':');
+                    cronExp = `${m} ${h} * * *`;
+                    isInterval = false;
+                } else {
+                    cronExp = `*/${timeVal} * * * *`;
+                    isInterval = true;
+                }
+
+                let mediaPath = null;
+                const quotedMsg = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
+                if (quotedMsg?.imageMessage) {
+                    try {
+                        const fakeMsg = { key: msg.message.extendedTextMessage.contextInfo.stanzaId, message: quotedMsg };
+                        const buffer = await downloadMediaMessage(fakeMsg, 'buffer', {}, { logger: pino({ level: 'error' }) });
+                        mediaPath = `${MEDIA_DIR}/img_${Date.now()}.jpg`;
+                        fs.writeFileSync(mediaPath, buffer);
+                    } catch (error) {
+                        return sock.sendMessage(remoteJid, { text: "❌ Error al guardar la imagen." });
+                    }
+                }
+
+                db.tasks.push({
+                    targetId: 'status@broadcast',
+                    cronTime: cronExp,
+                    message: texto,
+                    mediaPath,
+                    isInterval,
+                    enabled: true
+                });
+                saveDB();
+                iniciarCronJobs(sock);
+
+                let resText = `✅ Estado programado.\n⏱️ ${isInterval ? `Cada ${timeVal} minutos` : `A las ${timeVal} hrs`}.`;
                 await sock.sendMessage(remoteJid, { text: resText });
             }
 
             // === COMANDO: !listartareas ===
-            // Muestra todas las tareas programadas indicando si tienen foto
             if (command === 'listartareas') {
-                if (db.tasks.length === 0) return sock.sendMessage(remoteJid, { text: "No tienes ninguna tarea programada." });
-                
+                if (db.tasks.length === 0) return sock.sendMessage(remoteJid, { text: "No hay tareas programadas." });
                 let res = "*📋 Tareas Programadas:*\n";
-                db.tasks.forEach((t, i) => { 
+                db.tasks.forEach((t, i) => {
                     const destino = t.targetId === 'status@broadcast' ? '🟢 Estado' : `👥 Grupo`;
                     const foto = t.mediaPath ? '🖼️ Sí' : '📝 Solo texto';
-                    res += `\n*ID Tarea: [ ${i} ]*\n📍 Destino: ${destino}\n⏱️ Cron: ${t.cronTime}\n📎 Contiene Foto: ${foto}\n💬 Texto: ${t.message.substring(0,25)}...\n`; 
+                    const estado = t.enabled ? '✅ Activa' : '❌ Inactiva';
+                    res += `\n*ID: ${i}* (${estado})\n📍 ${destino}\n⏱️ Cron: ${t.cronTime}\n📎 Foto: ${foto}\n💬 Texto: ${t.message.substring(0, 30)}...\n`;
                 });
                 await sock.sendMessage(remoteJid, { text: res });
             }
@@ -267,83 +360,111 @@ async function connectToWhatsApp() {
             if (command === 'borrartarea') {
                 const idx = parseInt(args[0]);
                 if (db.tasks[idx]) {
-                    // Limpieza profunda: Si tenía una foto en el servidor, borrar el archivo para no saturar el disco
                     if (db.tasks[idx].mediaPath && fs.existsSync(db.tasks[idx].mediaPath)) {
                         fs.unlinkSync(db.tasks[idx].mediaPath);
                     }
-                    db.tasks.splice(idx, 1); 
-                    saveDB(); 
+                    db.tasks.splice(idx, 1);
+                    saveDB();
                     iniciarCronJobs(sock);
-                    await sock.sendMessage(remoteJid, { text: `✅ Tarea [${idx}] eliminada correctamente.` });
+                    await sock.sendMessage(remoteJid, { text: `✅ Tarea [${idx}] eliminada.` });
                 } else {
-                    await sock.sendMessage(remoteJid, { text: "❌ ID de tarea inválido." });
+                    await sock.sendMessage(remoteJid, { text: "❌ ID inválido." });
                 }
             }
 
-            // === COMANDO: !editartarea [ID] [Nuevo Texto] ===
-            // Permite actualizar el texto y la imagen de una tarea existente sin cambiar su horario/grupo
+            // === COMANDO: !activartarea [ID] / !desactivartarea [ID] ===
+            if (command === 'activartarea' || command === 'desactivartarea') {
+                const idx = parseInt(args[0]);
+                if (db.tasks[idx] !== undefined) {
+                    const nuevoEstado = (command === 'activartarea');
+                    db.tasks[idx].enabled = nuevoEstado;
+                    saveDB();
+                    iniciarCronJobs(sock);
+                    await sock.sendMessage(remoteJid, { text: `✅ Tarea [${idx}] ${nuevoEstado ? 'activada' : 'desactivada'}.` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: "❌ ID inválido." });
+                }
+            }
+
+            // === COMANDO: !editartarea [ID] [nuevo texto] ===
             if (command === 'editartarea') {
                 const idx = parseInt(args[0]);
                 const nuevoTexto = args.slice(1).join(' ');
-
-                if (!db.tasks[idx]) {
-                    return sock.sendMessage(remoteJid, { text: "❌ No existe ninguna tarea con ese ID. Usa !listartareas." });
-                }
-
-                if (nuevoTexto) {
-                    db.tasks[idx].message = nuevoTexto;
-                }
-
-                const quotedMsg = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
-                if (quotedMsg?.imageMessage) {
-                    try {
-                        // Borrar la imagen vieja si existía
-                        if (db.tasks[idx].mediaPath && fs.existsSync(db.tasks[idx].mediaPath)) {
-                            fs.unlinkSync(db.tasks[idx].mediaPath);
+                if (db.tasks[idx]) {
+                    if (nuevoTexto) db.tasks[idx].message = nuevoTexto;
+                    const quotedMsg = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
+                    if (quotedMsg?.imageMessage) {
+                        try {
+                            if (db.tasks[idx].mediaPath && fs.existsSync(db.tasks[idx].mediaPath)) {
+                                fs.unlinkSync(db.tasks[idx].mediaPath);
+                            }
+                            const fakeMsg = { key: msg.message.extendedTextMessage.contextInfo.stanzaId, message: quotedMsg };
+                            const buffer = await downloadMediaMessage(fakeMsg, 'buffer', {}, { logger: pino({ level: 'error' }) });
+                            const newMediaPath = `${MEDIA_DIR}/img_${Date.now()}.jpg`;
+                            fs.writeFileSync(newMediaPath, buffer);
+                            db.tasks[idx].mediaPath = newMediaPath;
+                        } catch (error) {
+                            return sock.sendMessage(remoteJid, { text: "❌ Error al actualizar la imagen." });
                         }
-                        
-                        // Descargar y guardar la nueva imagen
-                        const fakeMsg = { key: msg.message.extendedTextMessage.contextInfo.stanzaId, message: quotedMsg };
-                        const buffer = await downloadMediaMessage(fakeMsg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
-                        const newMediaPath = `${MEDIA_DIR}/img_${Date.now()}.jpg`;
-                        fs.writeFileSync(newMediaPath, buffer);
-                        
-                        db.tasks[idx].mediaPath = newMediaPath;
-                    } catch (error) {
-                        return sock.sendMessage(remoteJid, { text: "❌ Error actualizando la imagen." });
                     }
+                    saveDB();
+                    iniciarCronJobs(sock);
+                    await sock.sendMessage(remoteJid, { text: `✅ Tarea [${idx}] actualizada.` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: "❌ ID inválido." });
                 }
-
-                saveDB();
-                iniciarCronJobs(sock); // Reiniciar el motor para aplicar los cambios en memoria
-                await sock.sendMessage(remoteJid, { text: `✅ Tarea [${idx}] actualizada exitosamente.` });
             }
 
-            // === COMANDO: !estado [Texto] ===
-            // Publicación manual inmediata a los estados
+            // === COMANDO: !editartiempo [ID] [HH:MM o Minutos] ===
+            if (command === 'editartiempo') {
+                const idx = parseInt(args[0]);
+                const timeVal = args[1];
+                if (db.tasks[idx] && timeVal) {
+                    let cronExp, isInterval;
+                    if (timeVal.includes(':')) {
+                        const [h, m] = timeVal.split(':');
+                        cronExp = `${m} ${h} * * *`;
+                        isInterval = false;
+                    } else {
+                        cronExp = `*/${timeVal} * * * *`;
+                        isInterval = true;
+                    }
+                    db.tasks[idx].cronTime = cronExp;
+                    db.tasks[idx].isInterval = isInterval;
+                    saveDB();
+                    iniciarCronJobs(sock);
+                    await sock.sendMessage(remoteJid, { text: `✅ Horario de tarea [${idx}] actualizado a ${timeVal}.` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: "❌ ID o tiempo inválido." });
+                }
+            }
+
+            // === COMANDO: !estado [Texto] === (Manual)
             if (command === 'estado') {
                 const textoEstado = args.join(' ');
                 if (msg.message.imageMessage || msg.message.videoMessage) {
                     try {
-                        const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                        const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'error' }) });
                         await sock.sendMessage('status@broadcast', { image: buffer, caption: textoEstado }, { statusJidList: [sock.user.id] });
-                        await sock.sendMessage(remoteJid, { text: "✅ Estado con multimedia subido correctamente." });
+                        await sock.sendMessage(remoteJid, { text: "✅ Estado con multimedia publicado." });
                     } catch (error) {
-                        await sock.sendMessage(remoteJid, { text: "❌ Hubo un error al procesar el archivo multimedia." });
+                        await sock.sendMessage(remoteJid, { text: "❌ Error al procesar multimedia." });
                     }
                 } else {
                     await sock.sendMessage('status@broadcast', { text: textoEstado }, { statusJidList: [sock.user.id] });
-                    await sock.sendMessage(remoteJid, { text: "✅ Estado subido." });
+                    await sock.sendMessage(remoteJid, { text: "✅ Estado publicado." });
                 }
             }
 
-            // === COMANDOS DE CONFIGURACIÓN DE AUTO-RESPUESTA ===
+            // === COMANDOS AUTO-RESPUESTA ===
             if (command === 'autoreply') {
                 const mode = args[0];
                 if (mode === 'on' || mode === 'off') {
                     db.autoReply.active = (mode === 'on');
                     saveDB();
-                    await sock.sendMessage(remoteJid, { text: `✅ Auto-respuesta de inbox configurada en: ${mode.toUpperCase()}` });
+                    await sock.sendMessage(remoteJid, { text: `✅ Auto-respuesta ${mode.toUpperCase()}.` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: "Uso: !autoreply on|off" });
                 }
             }
 
@@ -354,8 +475,48 @@ async function connectToWhatsApp() {
                     db.autoReply.startHour = inicio;
                     db.autoReply.endHour = fin;
                     saveDB();
-                    await sock.sendMessage(remoteJid, { text: `✅ Horario de dormir ajustado. De ${inicio}:00 a ${fin}:00.` });
+                    await sock.sendMessage(remoteJid, { text: `✅ Horario de dormir: ${inicio}:00 a ${fin}:00.` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: "Uso: !sethoras [hora_inicio] [hora_fin]" });
                 }
+            }
+
+            if (command === 'setreplytext') {
+                const nuevoTexto = args.join(' ');
+                if (nuevoTexto) {
+                    db.autoReply.text = nuevoTexto;
+                    saveDB();
+                    await sock.sendMessage(remoteJid, { text: `✅ Mensaje de auto-respuesta actualizado.` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: "Uso: !setreplytext [texto]" });
+                }
+            }
+
+            // === COMANDO: !loggroups on/off ===
+            if (command === 'loggroups') {
+                const mode = args[0];
+                if (mode === 'on' || mode === 'off') {
+                    db.logGroups = (mode === 'on');
+                    saveDB();
+                    await sock.sendMessage(remoteJid, { text: `✅ Registro de grupos ${mode.toUpperCase()}.` });
+                } else {
+                    await sock.sendMessage(remoteJid, { text: "Uso: !loggroups on|off" });
+                }
+            }
+
+            // === COMANDO: !mostrarconfig ===
+            if (command === 'mostrarconfig') {
+                const autoReplyEstado = db.autoReply.active ? 'ACTIVA' : 'INACTIVA';
+                const logGroupsEstado = db.logGroups ? 'ACTIVO' : 'INACTIVO';
+                let configMsg = `*Configuración actual:*\n\n`;
+                configMsg += `🔁 Auto-respuesta: ${autoReplyEstado}\n`;
+                configMsg += `⏰ Horario dormir: ${db.autoReply.startHour}:00 - ${db.autoReply.endHour}:00\n`;
+                configMsg += `📝 Texto: ${db.autoReply.text}\n`;
+                configMsg += `📊 Tareas totales: ${db.tasks.length}\n`;
+                const activas = db.tasks.filter(t => t.enabled).length;
+                configMsg += `⚙️ Activas: ${activas}\n`;
+                configMsg += `📢 Registro de grupos: ${logGroupsEstado}\n`;
+                await sock.sendMessage(remoteJid, { text: configMsg });
             }
         }
     });
@@ -392,7 +553,7 @@ app.get('/', (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🌐 Servidor web escuchando en http://localhost:${PORT}`));
 
 // Iniciar el sistema principal
 connectToWhatsApp();
