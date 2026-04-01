@@ -1,10 +1,11 @@
 # Usar una imagen oficial de Node.js 20 ligera
 FROM node:20-bullseye-slim
 
-# Instalar herramientas de compilación básicas por si Baileys lo requiere
+# Instalar git, python3 y herramientas de compilación
 RUN apt-get update && apt-get install -y \
     python3 \
     build-essential \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Crear y definir el directorio de trabajo dentro del contenedor
@@ -18,6 +19,9 @@ RUN npm install
 
 # Copiar el resto del código del bot
 COPY . .
+
+# Crear la carpeta de medios
+RUN mkdir -p media
 
 # Exponer el puerto para el servidor web (QR)
 EXPOSE 3000
