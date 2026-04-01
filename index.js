@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const cron = require('node-cron');
@@ -17,6 +17,8 @@ const DB_FILE = './database.json';
 let qrActual = '';
 let estaConectado = false;
 let scheduledJobs = {}; // Almacena los procesos de cron activos en memoria
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 // Crear directorio de medios si no existe
 if (!fs.existsSync(MEDIA_DIR)) {
@@ -43,14 +45,12 @@ if (fs.existsSync(DB_FILE)) {
     try {
         const rawData = fs.readFileSync(DB_FILE);
         db = JSON.parse(rawData);
-        // Asegurar que exista la propiedad logGroups
         if (db.logGroups === undefined) db.logGroups = false;
     } catch (error) {
         console.error("Error leyendo database.json. Se usará la DB por defecto.", error);
     }
 }
 
-// Función centralizada para guardar cambios en disco
 const saveDB = () => {
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 };
@@ -59,19 +59,15 @@ const saveDB = () => {
 // 3. MOTOR AVANZADO DE TAREAS PROGRAMADAS Y ESTADOS
 // ============================================================================
 function iniciarCronJobs(sock) {
-    // 1. Detener absolutamente todas las tareas anteriores para evitar duplicados
     Object.values(scheduledJobs).forEach(job => job.stop());
     scheduledJobs = {};
 
-    // 2. Recorrer la base de datos y programar las tareas activas
     db.tasks.forEach((task, index) => {
         if (!task.enabled) return;
 
         scheduledJobs[index] = cron.schedule(task.cronTime, async () => {
             try {
                 let content = {};
-
-                // Verificar si la tarea tiene una imagen adjunta y si el archivo aún existe
                 if (task.mediaPath && fs.existsSync(task.mediaPath)) {
                     const buffer = fs.readFileSync(task.mediaPath);
                     content = { image: buffer, caption: task.message };
@@ -79,7 +75,6 @@ function iniciarCronJobs(sock) {
                     content = { text: task.message };
                 }
 
-                // Enviar el mensaje (Si es estado, requiere formato especial)
                 if (task.targetId === 'status@broadcast') {
                     await sock.sendMessage('status@broadcast', content, { statusJidList: [sock.user.id] });
                     console.log(`[Cron] Estado automático publicado a las ${new Date().toLocaleTimeString()}`);
@@ -93,8 +88,7 @@ function iniciarCronJobs(sock) {
         }, { timezone: ZONA_HORARIA });
     });
 
-    // 3. Cron fijo interno: Resetear la lista de personas que ya recibieron auto-respuesta
-    // Se ejecuta todos los días al mediodía (12:00 PM)
+    // Resetear lista de auto-respuesta cada día al mediodía
     cron.schedule('0 12 * * *', () => {
         db.autoReply.repliedToday = [];
         saveDB();
@@ -110,8 +104,8 @@ async function connectToWhatsApp() {
 
     const sock = makeWASocket({
         auth: state,
-        logger: pino({ level: 'error' }), // Solo mostrar errores importantes
-        browser: Browsers.macOS('Desktop') // Conexión estándar para evitar rechazos de WhatsApp
+        logger: pino({ level: 'error' }),
+        browser: ["REFERI MILLOBET", "Chrome", "20.0.0"]
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -120,28 +114,38 @@ async function connectToWhatsApp() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log("✅ QR recibido, generando código para la web...");
+            reconnectAttempts = 0;
             qrActual = await qrcode.toDataURL(qr);
-            console.log("Escanea el QR desde la dirección de tu servidor web.");
+            console.log("✅ QR generado. Abre http://localhost:" + PORT + " para escanear.");
+            console.log("QR en texto (alternativa):\n", qr);
         }
 
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            const statusCode = lastDisconnect.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             estaConectado = false;
-            console.log('CONEXIÓN CERRADA. ¿Debe reconectar?:', shouldReconnect);
+
             if (shouldReconnect) {
-                setTimeout(connectToWhatsApp, 10000); // Esperar 10 segundos
-            } else {
-                console.log('SESIÓN CERRADA MANUALMENTE DESDE EL TELÉFONO.');
-                // Limpiar la sesión actual si se cierra manualmente
-                if (fs.existsSync('./auth_info_baileys')) {
-                    fs.rmSync('./auth_info_baileys', { recursive: true, force: true });
+                reconnectAttempts++;
+                if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+                    console.log("⚠️ Demasiados reintentos. Borrando sesión y reiniciando...");
+                    fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+                    reconnectAttempts = 0;
+                    setTimeout(connectToWhatsApp, 5000);
+                } else {
+                    console.log(`Reintento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} en 10s...`);
+                    setTimeout(connectToWhatsApp, 10000);
                 }
+            } else {
+                console.log('Sesión cerrada desde el teléfono. Esperando nuevo QR.');
+                qrActual = '';
+                // No reconectar automáticamente, esperar a que el usuario escanee
             }
         } else if (connection === 'open') {
+            reconnectAttempts = 0;
             estaConectado = true;
             qrActual = '';
-            console.log('¡BOT CONECTADO EXITOSAMENTE!');
+            console.log('✅ BOT CONECTADO EXITOSAMENTE');
             iniciarCronJobs(sock);
         }
     });
@@ -158,7 +162,6 @@ async function connectToWhatsApp() {
         const isFromMe = msg.key.fromMe;
         const isGroup = remoteJid.endsWith('@g.us');
 
-        // Extraer texto dependiendo de si el mensaje tiene imagen, si es citado, o si es texto normal
         const textMessage = msg.message.conversation ||
             msg.message.extendedTextMessage?.text ||
             msg.message.imageMessage?.caption ||
@@ -168,17 +171,13 @@ async function connectToWhatsApp() {
         // REGISTRO DE MENSAJES DE GRUPOS (LOGS EN CHAT PRIVADO)
         // ------------------------------------------------------------------------
         if (isGroup && !isFromMe && db.logGroups) {
-            // Obtener información del grupo (nombre)
             let groupName = remoteJid;
             try {
                 const groupMetadata = await sock.groupMetadata(remoteJid);
                 groupName = groupMetadata.subject;
-            } catch (err) {
-                console.error("Error obteniendo metadata del grupo:", err);
-            }
+            } catch (err) {}
 
-            // Obtener nombre del remitente
-            let senderName = remoteJid.split('@')[0]; // por defecto el número
+            let senderName = remoteJid.split('@')[0];
             if (msg.key.participant) {
                 try {
                     const contact = await sock.contactQuery(msg.key.participant);
@@ -188,10 +187,7 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // Construir contenido del mensaje para el log
             let logContent = `📢 *Grupo:* ${groupName}\n👤 *De:* ${senderName}\n`;
-
-            // Detectar tipo de mensaje
             if (textMessage) {
                 logContent += `💬 *Mensaje:* ${textMessage}`;
             } else if (msg.message.imageMessage) {
@@ -200,25 +196,21 @@ async function connectToWhatsApp() {
                 logContent += `🎥 *Video* (caption: ${msg.message.videoMessage.caption || 'sin texto'})`;
             } else if (msg.message.documentMessage) {
                 logContent += `📄 *Documento*: ${msg.message.documentMessage.fileName || 'archivo'}`;
-            } else if (msg.message.audioMessage) {
-                logContent += `🎵 *Audio*`;
             } else {
                 logContent += `📨 *Otro tipo de mensaje*`;
             }
 
-            // Enviar el log al chat del dueño (su propio número)
             await sock.sendMessage(sock.user.id, { text: logContent });
         }
 
         // ------------------------------------------------------------------------
-        // SISTEMA DE AUTO-RESPUESTA INBOX (Modo Dormir)
+        // AUTO-RESPUESTA INBOX (Modo Dormir)
         // ------------------------------------------------------------------------
         if (!isGroup && !isFromMe && db.autoReply.active && remoteJid !== 'status@broadcast') {
             const horaActualStr = new Date().toLocaleString("en-US", { timeZone: ZONA_HORARIA, hour: 'numeric', hour12: false });
             const horaActual = parseInt(horaActualStr);
             const { startHour, endHour, repliedToday, text } = db.autoReply;
 
-            // Lógica para detectar si la hora actual está dentro del horario de dormir (cruza medianoche)
             const isSleepingTime = startHour > endHour
                 ? (horaActual >= startHour || horaActual < endHour)
                 : (horaActual >= startHour && horaActual < endHour);
@@ -227,18 +219,17 @@ async function connectToWhatsApp() {
                 await sock.sendMessage(remoteJid, { text: text }, { quoted: msg });
                 db.autoReply.repliedToday.push(remoteJid);
                 saveDB();
-                console.log(`[AutoReply] Respuesta enviada a ${remoteJid}`);
             }
         }
 
         // ------------------------------------------------------------------------
-        // GESTOR DE COMANDOS (Solo procesa si el mensaje lo envía el dueño)
+        // GESTOR DE COMANDOS (Solo dueño)
         // ------------------------------------------------------------------------
         if (isFromMe && textMessage.startsWith('!')) {
             const args = textMessage.slice(1).trim().split(/ +/);
             const command = args.shift().toLowerCase();
 
-            // === COMANDO: !grupos (o !detectid) ===
+            // === COMANDO: !grupos / !detectid ===
             if (command === 'grupos' || command === 'detectid') {
                 const groups = await sock.groupFetchAllParticipating();
                 let lista = "*📋 Tus Grupos Activos:*\n";
@@ -249,7 +240,7 @@ async function connectToWhatsApp() {
                 await sock.sendMessage(remoteJid, { text: lista });
             }
 
-            // === COMANDO: !addtask [ID_Grupo] [HH:MM o Minutos] [Mensaje] ===
+            // === COMANDO: !addtask / !setreplygroup ===
             if (command === 'addtask' || command === 'setreplygroup') {
                 const targetId = args[0];
                 const timeVal = args[1];
@@ -281,22 +272,14 @@ async function connectToWhatsApp() {
                     }
                 }
 
-                db.tasks.push({
-                    targetId,
-                    cronTime: cronExp,
-                    message: texto,
-                    mediaPath,
-                    isInterval,
-                    enabled: true
-                });
+                db.tasks.push({ targetId, cronTime: cronExp, message: texto, mediaPath, isInterval, enabled: true });
                 saveDB();
                 iniciarCronJobs(sock);
-
                 let resText = `✅ Tarea guardada.\n📍 Grupo: ${targetId}\n⏱️ ${isInterval ? `Cada ${timeVal} minutos` : `A las ${timeVal} hrs`}.`;
                 await sock.sendMessage(remoteJid, { text: resText });
             }
 
-            // === COMANDO: !addstatus [HH:MM o Minutos] [Mensaje] ===
+            // === COMANDO: !addstatus / !setreplystatus ===
             if (command === 'addstatus' || command === 'setreplystatus') {
                 const timeVal = args[0];
                 const texto = args.slice(1).join(' ');
@@ -327,17 +310,9 @@ async function connectToWhatsApp() {
                     }
                 }
 
-                db.tasks.push({
-                    targetId: 'status@broadcast',
-                    cronTime: cronExp,
-                    message: texto,
-                    mediaPath,
-                    isInterval,
-                    enabled: true
-                });
+                db.tasks.push({ targetId: 'status@broadcast', cronTime: cronExp, message: texto, mediaPath, isInterval, enabled: true });
                 saveDB();
                 iniciarCronJobs(sock);
-
                 let resText = `✅ Estado programado.\n⏱️ ${isInterval ? `Cada ${timeVal} minutos` : `A las ${timeVal} hrs`}.`;
                 await sock.sendMessage(remoteJid, { text: resText });
             }
@@ -371,7 +346,7 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // === COMANDO: !activartarea [ID] / !desactivartarea [ID] ===
+            // === COMANDO: !activartarea / !desactivartarea ===
             if (command === 'activartarea' || command === 'desactivartarea') {
                 const idx = parseInt(args[0]);
                 if (db.tasks[idx] !== undefined) {
@@ -385,7 +360,7 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // === COMANDO: !editartarea [ID] [nuevo texto] ===
+            // === COMANDO: !editartarea ===
             if (command === 'editartarea') {
                 const idx = parseInt(args[0]);
                 const nuevoTexto = args.slice(1).join(' ');
@@ -414,7 +389,7 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // === COMANDO: !editartiempo [ID] [HH:MM o Minutos] ===
+            // === COMANDO: !editartiempo ===
             if (command === 'editartiempo') {
                 const idx = parseInt(args[0]);
                 const timeVal = args[1];
@@ -438,7 +413,7 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // === COMANDO: !estado [Texto] === (Manual)
+            // === COMANDO: !estado (manual) ===
             if (command === 'estado') {
                 const textoEstado = args.join(' ');
                 if (msg.message.imageMessage || msg.message.videoMessage) {
@@ -491,7 +466,7 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // === COMANDO: !loggroups on/off ===
+            // === COMANDO: !loggroups ===
             if (command === 'loggroups') {
                 const mode = args[0];
                 if (mode === 'on' || mode === 'off') {
@@ -528,8 +503,8 @@ app.get('/', (req, res) => {
     if (estaConectado) {
         res.send(`
             <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-                <h1 style="color: green;">✅ REFERI MILLOBET está en línea</h1>
-                <p>El bot está operativo y esperando comandos.</p>
+                <h1 style="color: green;">✅ BOT EN LÍNEA</h1>
+                <p>El bot está operativo.</p>
             </div>
         `);
     } else if (qrActual) {
@@ -538,21 +513,20 @@ app.get('/', (req, res) => {
                 <h1>Escanea el código QR</h1>
                 <img src="${qrActual}" alt="QR Code" style="width: 300px; height: 300px; border: 1px solid #ccc; padding: 10px; border-radius: 10px;">
                 <p>Abre WhatsApp > Dispositivos vinculados > Vincular un dispositivo</p>
-                <p style="color: gray; font-size: 12px;">La página se actualiza automáticamente...</p>
                 <script>setTimeout(() => location.reload(), 5000);</script>
             </div>
         `);
     } else {
         res.send(`
             <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-                <h1>⏳ Generando QR de acceso...</h1>
+                <h1>⏳ Esperando QR...</h1>
                 <script>setTimeout(() => location.reload(), 3000);</script>
             </div>
         `);
     }
 });
 
-app.listen(PORT, () => console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🌐 Servidor web escuchando en http://localhost:${PORT}`));
 
 // Iniciar el sistema principal
 connectToWhatsApp();
