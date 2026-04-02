@@ -1,8 +1,9 @@
 FROM node:18-bullseye-slim
 
-# Instalar Chromium y dependencias necesarias para Puppeteer
+# Instalar Chromium, GIT y dependencias necesarias para Puppeteer
 RUN apt-get update && apt-get install -y \
     chromium \
+    git \
     fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
