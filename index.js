@@ -13,17 +13,17 @@ const PORT = process.env.PORT || 3000;
 const ZONA_HORARIA = process.env.TZ || "America/Havana";
 const MEDIA_DIR = './media';
 const DB_FILE = './database.json';
+const AUTH_DIR = 'auth_info_baileys';
 const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || null; 
 
 let qrActual = '';
 let estaConectado = false;
 let scheduledJobs = {};
-let reconnectAttempts = 0;
 let pairingCode = null;      
 let pairingRequested = false; 
-const MAX_RECONNECT_ATTEMPTS = 5;
 
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
+if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
 // ============================================================================
 // 2. GESTIÓN DE LA BASE DE DATOS (JSON LOCAL)
@@ -64,13 +64,14 @@ function iniciarCronJobs(sock) {
 // 4. NÚCLEO DEL CLIENTE DE WHATSAPP (BAILEYS)
 // ============================================================================
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
     const sock = makeWASocket({
         auth: state,
-        logger: pino({ level: 'silent' }), // Silenciado para evitar basura en los logs de Render
-        browser: ["Ubuntu", "Chrome", "20.0.0"], // Finge ser Ubuntu/Chrome para evitar bloqueos
-        printQRInTerminal: !BOT_PHONE_NUMBER // Solo imprime QR si no hay número
+        logger: pino({ level: 'silent' }), 
+        browser: ["Ubuntu", "Chrome", "20.0.0"], 
+        printQRInTerminal: false,
+        syncFullHistory: false // Para acelerar el inicio
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -78,29 +79,25 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // Gestión del QR (si no se usa número)
-        if (qr && !BOT_PHONE_NUMBER) {
-            reconnectAttempts = 0;
-            qrActual = await qrcode.toDataURL(qr);
-            console.log("✅ QR generado en la web.");
-        }
-
-        // SOLUCIÓN AL ERROR 428: Esperar que el socket esté listo antes de pedir código
-        if (BOT_PHONE_NUMBER && !state.creds.registered && !pairingRequested) {
-            pairingRequested = true;
-            console.log(`⏳ Esperando estabilización de conexión para +${BOT_PHONE_NUMBER}...`);
-            
-            setTimeout(async () => {
-                try {
-                    const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-                    // Formatear código para que sea más fácil de leer (Ej: ABCD-1234)
-                    pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-                    console.log(`\n=========================================\n🔢 TU CÓDIGO DE VINCULACIÓN ES: ${pairingCode}\n=========================================\n`);
-                } catch (err) {
-                    console.error('❌ Error al solicitar el código de vinculación:', err.message);
-                    pairingRequested = false; // Permitimos que intente de nuevo si falló
+        // AQUÍ ESTÁ LA MAGIA: Cuando Baileys lanza un QR, significa que el socket está 100% listo.
+        if (qr && !state.creds.registered) {
+            if (BOT_PHONE_NUMBER) {
+                if (!pairingRequested) {
+                    pairingRequested = true;
+                    console.log(`\n📲 Conexión lista. Solicitando código para +${BOT_PHONE_NUMBER}...`);
+                    try {
+                        const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+                        pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                        console.log(`\n=========================================\n🔢 TU CÓDIGO DE VINCULACIÓN ES: ${pairingCode}\n=========================================\n`);
+                    } catch (err) {
+                        console.error('❌ Error al solicitar el código:', err.message);
+                        pairingRequested = false; 
+                    }
                 }
-            }, 5000); // 5 segundos de gracia
+            } else {
+                qrActual = await qrcode.toDataURL(qr);
+                console.log("✅ QR generado en la web.");
+            }
         }
 
         if (connection === 'close') {
@@ -109,26 +106,17 @@ async function connectToWhatsApp() {
             estaConectado = false;
 
             if (shouldReconnect) {
-                reconnectAttempts++;
-                console.log(`❌ Conexión cerrada. Reintento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} en 5s...`);
-                
-                if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-                    console.log("⚠️ Demasiados reintentos. Borrando sesión de prueba y reiniciando...");
-                    fs.rmSync('auth_info_baileys', { recursive: true, force: true });
-                    reconnectAttempts = 0;
-                    pairingRequested = false; 
-                }
+                console.log(`❌ Conexión interrumpida (Código: ${statusCode || 'N/A'}). Reconectando en 5 segundos...`);
                 setTimeout(connectToWhatsApp, 5000);
             } else {
-                console.log('🚪 Sesión cerrada desde el teléfono. Borrando credenciales...');
+                console.log('🚪 Sesión cerrada o desvinculada. Borrando credenciales...');
                 qrActual = '';
                 pairingCode = null;
                 pairingRequested = false;
-                fs.rmSync('auth_info_baileys', { recursive: true, force: true });
-                connectToWhatsApp();
+                try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch(e){}
+                setTimeout(connectToWhatsApp, 3000);
             }
         } else if (connection === 'open') {
-            reconnectAttempts = 0;
             estaConectado = true;
             qrActual = '';
             pairingCode = null;
