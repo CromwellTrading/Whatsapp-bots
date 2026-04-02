@@ -1,30 +1,24 @@
-# Usar una imagen oficial de Node.js 20 ligera
-FROM node:20-bullseye-slim
+FROM node:18-bullseye-slim
 
-# Instalar git, python3 y herramientas de compilación
+# Instalar Chromium y dependencias necesarias para Puppeteer
 RUN apt-get update && apt-get install -y \
-    python3 \
-    build-essential \
-    git \
+    chromium \
+    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
+    --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Crear y definir el directorio de trabajo dentro del contenedor
+# Configurar variables de entorno para que Puppeteer use el Chromium que instalamos
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
 WORKDIR /app
 
-# Copiar los archivos de dependencias primero (para optimizar caché de Docker)
+# Copiar archivos e instalar dependencias
 COPY package*.json ./
+# Instalamos la nueva librería y las necesarias para la web
+RUN npm install whatsapp-web.js qrcode express
 
-# Instalar las dependencias
-RUN npm install
-
-# Copiar el resto del código del bot
 COPY . .
 
-# Crear la carpeta de medios
-RUN mkdir -p media
-
-# Exponer el puerto para el servidor web (QR)
 EXPOSE 3000
-
-# Comando para iniciar el bot
-CMD ["npm", "start"]
+CMD ["node", "index.js"]
