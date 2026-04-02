@@ -13,14 +13,14 @@ const PORT = process.env.PORT || 3000;
 const ZONA_HORARIA = process.env.TZ || "America/Havana";
 const MEDIA_DIR = './media';
 const DB_FILE = './database.json';
-const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || null; // Número para el código de vinculación
+const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || null; 
 
 let qrActual = '';
 let estaConectado = false;
 let scheduledJobs = {};
 let reconnectAttempts = 0;
-let pairingCode = null;      // Guardar el código de 8 dígitos
-let pairingRequested = false; // Evitar solicitar varias veces
+let pairingCode = null;      
+let pairingRequested = false; 
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
@@ -68,38 +68,39 @@ async function connectToWhatsApp() {
 
     const sock = makeWASocket({
         auth: state,
-        logger: pino({ level: 'error' }),
-        browser: ["REFERI MILLOBET", "Chrome", "20.0.0"]
+        logger: pino({ level: 'silent' }), // Silenciado para evitar basura en los logs de Render
+        browser: ["Ubuntu", "Chrome", "20.0.0"], // Finge ser Ubuntu/Chrome para evitar bloqueos
+        printQRInTerminal: !BOT_PHONE_NUMBER // Solo imprime QR si no hay número
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Si tenemos número de teléfono y aún no hay credenciales, solicitamos el código de vinculación
-    if (BOT_PHONE_NUMBER && !state.creds.registered) {
-        if (!pairingRequested) {
-            pairingRequested = true;
-            console.log(`📱 Solicitando código de vinculación para +${BOT_PHONE_NUMBER}...`);
-            setTimeout(async () => {
-                try {
-                    const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-                    pairingCode = code;
-                    console.log(`🔢 Código de vinculación: ${pairingCode}`);
-                } catch (err) {
-                    console.error('Error al solicitar el código de vinculación:', err);
-                    pairingCode = null;
-                }
-            }, 1000); // Pequeña pausa para asegurar que el socket esté listo
-        }
-    }
-
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
+        // Gestión del QR (si no se usa número)
         if (qr && !BOT_PHONE_NUMBER) {
-            // Solo usar QR si no hay número configurado
             reconnectAttempts = 0;
             qrActual = await qrcode.toDataURL(qr);
-            console.log("✅ QR generado (solo si no hay número).");
+            console.log("✅ QR generado en la web.");
+        }
+
+        // SOLUCIÓN AL ERROR 428: Esperar que el socket esté listo antes de pedir código
+        if (BOT_PHONE_NUMBER && !state.creds.registered && !pairingRequested) {
+            pairingRequested = true;
+            console.log(`⏳ Esperando estabilización de conexión para +${BOT_PHONE_NUMBER}...`);
+            
+            setTimeout(async () => {
+                try {
+                    const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+                    // Formatear código para que sea más fácil de leer (Ej: ABCD-1234)
+                    pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                    console.log(`\n=========================================\n🔢 TU CÓDIGO DE VINCULACIÓN ES: ${pairingCode}\n=========================================\n`);
+                } catch (err) {
+                    console.error('❌ Error al solicitar el código de vinculación:', err.message);
+                    pairingRequested = false; // Permitimos que intente de nuevo si falló
+                }
+            }, 5000); // 5 segundos de gracia
         }
 
         if (connection === 'close') {
@@ -109,34 +110,35 @@ async function connectToWhatsApp() {
 
             if (shouldReconnect) {
                 reconnectAttempts++;
-                console.log(`❌ Conexión cerrada. Reintento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} en 10s...`);
+                console.log(`❌ Conexión cerrada. Reintento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} en 5s...`);
+                
                 if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-                    console.log("⚠️ Demasiados reintentos. Borrando sesión y reiniciando...");
+                    console.log("⚠️ Demasiados reintentos. Borrando sesión de prueba y reiniciando...");
                     fs.rmSync('auth_info_baileys', { recursive: true, force: true });
                     reconnectAttempts = 0;
-                    pairingRequested = false; // Permitir solicitar nuevo código
-                    setTimeout(connectToWhatsApp, 5000);
-                } else {
-                    setTimeout(connectToWhatsApp, 10000);
+                    pairingRequested = false; 
                 }
+                setTimeout(connectToWhatsApp, 5000);
             } else {
-                console.log('🚪 Sesión cerrada desde el teléfono. Esperando nuevo código/QR.');
+                console.log('🚪 Sesión cerrada desde el teléfono. Borrando credenciales...');
                 qrActual = '';
                 pairingCode = null;
                 pairingRequested = false;
+                fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+                connectToWhatsApp();
             }
         } else if (connection === 'open') {
             reconnectAttempts = 0;
             estaConectado = true;
             qrActual = '';
             pairingCode = null;
-            console.log('✅ BOT CONECTADO EXITOSAMENTE');
+            console.log('✅ BOT REFERI MILLOBET CONECTADO EXITOSAMENTE');
             iniciarCronJobs(sock);
         }
     });
 
     // ============================================================================
-    // 5. PROCESAMIENTO DE MENSAJES Y COMANDOS (completo, sin cambios)
+    // 5. PROCESAMIENTO DE MENSAJES Y COMANDOS (Intacto)
     // ============================================================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -360,16 +362,16 @@ async function connectToWhatsApp() {
 // ============================================================================
 app.get('/', (req, res) => {
     if (estaConectado) {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1 style="color:green;">✅ BOT EN LÍNEA</h1><p>El bot está operativo.</p></div>');
+        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1 style="color:green;">✅ BOT EN LÍNEA</h1><p>El bot está operativo y conectado a WhatsApp.</p></div>');
     } else if (pairingCode) {
         res.send(`
             <div style="font-family:sans-serif;text-align:center;margin-top:50px;">
                 <h1>🔢 Código de vinculación</h1>
-                <div style="font-size:48px;font-weight:bold;background:#f0f0f0;padding:20px;border-radius:10px;display:inline-block;margin:20px;">${pairingCode}</div>
+                <div style="font-size:48px;font-weight:bold;background:#f0f0f0;padding:20px;border-radius:10px;display:inline-block;margin:20px;letter-spacing:2px;">${pairingCode}</div>
                 <p>1. Abre WhatsApp en tu teléfono.</p>
                 <p>2. Ve a <strong>Dispositivos vinculados</strong>.</p>
                 <p>3. Toca <strong>Vincular un dispositivo</strong>.</p>
-                <p>4. Ingresa este código de 8 dígitos.</p>
+                <p>4. Ingresa este código para autorizar.</p>
                 <p style="color:gray;">La página se actualiza automáticamente...</p>
                 <script>setTimeout(() => location.reload(), 5000);</script>
             </div>
@@ -384,10 +386,10 @@ app.get('/', (req, res) => {
             </div>
         `);
     } else {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ Esperando código/QR...</h1><script>setTimeout(()=>location.reload(),3000);</script></div>');
+        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ Inicializando conexión con WhatsApp...</h1><script>setTimeout(()=>location.reload(),3000);</script></div>');
     }
 });
 
-app.listen(PORT, () => console.log(`🌐 Servidor web en http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🌐 Servidor web escuchando en el puerto ${PORT}`));
 
 connectToWhatsApp();
