@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const cron = require('node-cron');
@@ -69,9 +69,9 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }), 
-        browser: ["Ubuntu", "Chrome", "20.0.0"], 
+        browser: Browsers.macOS('Desktop'), // Usar navegador estándar para evitar bloqueos
         printQRInTerminal: false,
-        syncFullHistory: false // Para acelerar el inicio
+        syncFullHistory: false
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -79,12 +79,12 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // AQUÍ ESTÁ LA MAGIA: Cuando Baileys lanza un QR, significa que el socket está 100% listo.
+        // Dispara la vinculación solo cuando WhatsApp confirma que está listo enviando el evento 'qr'
         if (qr && !state.creds.registered) {
             if (BOT_PHONE_NUMBER) {
                 if (!pairingRequested) {
                     pairingRequested = true;
-                    console.log(`\n📲 Conexión lista. Solicitando código para +${BOT_PHONE_NUMBER}...`);
+                    console.log(`\n📲 Conexión estable. Solicitando código para +${BOT_PHONE_NUMBER}...`);
                     try {
                         const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
                         pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
@@ -105,11 +105,19 @@ async function connectToWhatsApp() {
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             estaConectado = false;
 
-            if (shouldReconnect) {
+            // LÓGICA DE CORRECCIÓN PARA ERRORES 405 y 401
+            if (statusCode === 405 || statusCode === 401) {
+                console.log(`⚠️ Sesión corrupta o rechazada (Código: ${statusCode}). Borrando datos para generar una nueva...`);
+                qrActual = '';
+                pairingCode = null;
+                pairingRequested = false;
+                try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch(e){}
+                setTimeout(connectToWhatsApp, 3000); // Reconecta limpio
+            } else if (shouldReconnect) {
                 console.log(`❌ Conexión interrumpida (Código: ${statusCode || 'N/A'}). Reconectando en 5 segundos...`);
                 setTimeout(connectToWhatsApp, 5000);
             } else {
-                console.log('🚪 Sesión cerrada o desvinculada. Borrando credenciales...');
+                console.log('🚪 Sesión cerrada desde el teléfono. Borrando credenciales...');
                 qrActual = '';
                 pairingCode = null;
                 pairingRequested = false;
@@ -126,7 +134,7 @@ async function connectToWhatsApp() {
     });
 
     // ============================================================================
-    // 5. PROCESAMIENTO DE MENSAJES Y COMANDOS (Intacto)
+    // 5. PROCESAMIENTO DE MENSAJES Y COMANDOS
     // ============================================================================
     sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
@@ -142,7 +150,6 @@ async function connectToWhatsApp() {
             msg.message.imageMessage?.caption ||
             msg.message.videoMessage?.caption || "";
 
-        // ========== REGISTRO DE GRUPOS ==========
         if (isGroup && !isFromMe && db.logGroups) {
             let groupName = remoteJid;
             try { groupName = (await sock.groupMetadata(remoteJid)).subject; } catch(e) {}
@@ -161,7 +168,6 @@ async function connectToWhatsApp() {
             await sock.sendMessage(sock.user.id, { text: logContent });
         }
 
-        // ========== AUTO-RESPUESTA ==========
         if (!isGroup && !isFromMe && db.autoReply.active && remoteJid !== 'status@broadcast') {
             const hora = parseInt(new Date().toLocaleString("en-US", { timeZone: ZONA_HORARIA, hour: 'numeric', hour12: false }));
             const { startHour, endHour, repliedToday, text } = db.autoReply;
@@ -173,12 +179,10 @@ async function connectToWhatsApp() {
             }
         }
 
-        // ========== GESTOR DE COMANDOS (SOLO DUEÑO) ==========
         if (isFromMe && textMessage.startsWith('!')) {
             const args = textMessage.slice(1).trim().split(/ +/);
             const command = args.shift().toLowerCase();
 
-            // --- !grupos / !detectid ---
             if (command === 'grupos' || command === 'detectid') {
                 const groups = await sock.groupFetchAllParticipating();
                 let lista = "*📋 Tus Grupos Activos:*\n";
@@ -186,7 +190,6 @@ async function connectToWhatsApp() {
                 await sock.sendMessage(remoteJid, { text: lista || "No estás en ningún grupo." });
             }
 
-            // --- !addtask / !setreplygroup ---
             if (command === 'addtask' || command === 'setreplygroup') {
                 const targetId = args[0], timeVal = args[1], texto = args.slice(2).join(' ');
                 if (!targetId || !timeVal || !texto) return sock.sendMessage(remoteJid, { text: "❌ Formato: !addtask [ID] [HH:MM o minutos] [mensaje]" });
@@ -207,7 +210,6 @@ async function connectToWhatsApp() {
                 sock.sendMessage(remoteJid, { text: `✅ Tarea guardada. ${isInterval ? `Cada ${timeVal} min` : `A las ${timeVal}`}` });
             }
 
-            // --- !addstatus / !setreplystatus ---
             if (command === 'addstatus' || command === 'setreplystatus') {
                 const timeVal = args[0], texto = args.slice(1).join(' ');
                 if (!timeVal || !texto) return sock.sendMessage(remoteJid, { text: "❌ Formato: !addstatus [HH:MM o minutos] [mensaje]" });
@@ -228,7 +230,6 @@ async function connectToWhatsApp() {
                 sock.sendMessage(remoteJid, { text: `✅ Estado programado. ${isInterval ? `Cada ${timeVal} min` : `A las ${timeVal}`}` });
             }
 
-            // --- !listartareas ---
             if (command === 'listartareas') {
                 if (!db.tasks.length) return sock.sendMessage(remoteJid, { text: "No hay tareas." });
                 let res = "*📋 Tareas Programadas:*\n";
@@ -241,7 +242,6 @@ async function connectToWhatsApp() {
                 sock.sendMessage(remoteJid, { text: res });
             }
 
-            // --- !borrartarea [ID] ---
             if (command === 'borrartarea') {
                 let idx = parseInt(args[0]);
                 if (db.tasks[idx]) {
@@ -252,7 +252,6 @@ async function connectToWhatsApp() {
                 } else sock.sendMessage(remoteJid, { text: "❌ ID inválido." });
             }
 
-            // --- !activartarea / !desactivartarea [ID] ---
             if (command === 'activartarea' || command === 'desactivartarea') {
                 let idx = parseInt(args[0]);
                 if (db.tasks[idx] !== undefined) {
@@ -262,7 +261,6 @@ async function connectToWhatsApp() {
                 } else sock.sendMessage(remoteJid, { text: "❌ ID inválido." });
             }
 
-            // --- !editartarea [ID] [nuevo texto] ---
             if (command === 'editartarea') {
                 let idx = parseInt(args[0]), nuevoTexto = args.slice(1).join(' ');
                 if (!db.tasks[idx]) return sock.sendMessage(remoteJid, { text: "❌ ID inválido." });
@@ -281,7 +279,6 @@ async function connectToWhatsApp() {
                 sock.sendMessage(remoteJid, { text: `✅ Tarea ${idx} actualizada.` });
             }
 
-            // --- !editartiempo [ID] [HH:MM o minutos] ---
             if (command === 'editartiempo') {
                 let idx = parseInt(args[0]), timeVal = args[1];
                 if (!db.tasks[idx] || !timeVal) return sock.sendMessage(remoteJid, { text: "❌ Uso: !editartiempo [ID] [HH:MM o minutos]" });
@@ -293,7 +290,6 @@ async function connectToWhatsApp() {
                 sock.sendMessage(remoteJid, { text: `✅ Horario tarea ${idx} actualizado a ${timeVal}.` });
             }
 
-            // --- !estado [texto] (manual) ---
             if (command === 'estado') {
                 let texto = args.join(' ');
                 if (msg.message.imageMessage || msg.message.videoMessage) {
@@ -308,35 +304,30 @@ async function connectToWhatsApp() {
                 }
             }
 
-            // --- !autoreply on/off ---
             if (command === 'autoreply') {
                 let mode = args[0];
                 if (mode === 'on' || mode === 'off') { db.autoReply.active = (mode === 'on'); saveDB(); sock.sendMessage(remoteJid, { text: `✅ Auto-respuesta ${mode.toUpperCase()}.` }); }
                 else sock.sendMessage(remoteJid, { text: "Uso: !autoreply on|off" });
             }
 
-            // --- !sethoras [inicio] [fin] ---
             if (command === 'sethoras') {
                 let inicio = parseInt(args[0]), fin = parseInt(args[1]);
                 if (!isNaN(inicio) && !isNaN(fin)) { db.autoReply.startHour = inicio; db.autoReply.endHour = fin; saveDB(); sock.sendMessage(remoteJid, { text: `✅ Horario dormir: ${inicio}:00 - ${fin}:00.` }); }
                 else sock.sendMessage(remoteJid, { text: "Uso: !sethoras [hora_inicio] [hora_fin]" });
             }
 
-            // --- !setreplytext [texto] ---
             if (command === 'setreplytext') {
                 let nuevo = args.join(' ');
                 if (nuevo) { db.autoReply.text = nuevo; saveDB(); sock.sendMessage(remoteJid, { text: "✅ Mensaje auto-respuesta actualizado." }); }
                 else sock.sendMessage(remoteJid, { text: "Uso: !setreplytext [texto]" });
             }
 
-            // --- !loggroups on/off ---
             if (command === 'loggroups') {
                 let mode = args[0];
                 if (mode === 'on' || mode === 'off') { db.logGroups = (mode === 'on'); saveDB(); sock.sendMessage(remoteJid, { text: `✅ Registro grupos ${mode.toUpperCase()}.` }); }
                 else sock.sendMessage(remoteJid, { text: "Uso: !loggroups on|off" });
             }
 
-            // --- !mostrarconfig ---
             if (command === 'mostrarconfig') {
                 let msg = `🔁 Auto-respuesta: ${db.autoReply.active?'ACTIVA':'INACTIVA'}\n⏰ Horario: ${db.autoReply.startHour}:00-${db.autoReply.endHour}:00\n📝 Texto: ${db.autoReply.text}\n📊 Tareas: ${db.tasks.length} (${db.tasks.filter(t=>t.enabled).length} activas)\n📢 Log grupos: ${db.logGroups?'ACTIVO':'INACTIVO'}`;
                 sock.sendMessage(remoteJid, { text: msg });
