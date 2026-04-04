@@ -1,8 +1,20 @@
-"dependencies": {
+{
+  "name": "referi-millobet-bot",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp con tareas programadas y auto-respuesta",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
     "@whiskeysockets/baileys": "^6.7.0",
-    "pino": "^8.0.0",
-    "node-cron": "^3.0.0",
+    "@supabase/supabase-js": "^2.39.0",
     "express": "^4.18.0",
-    "qrcode": "^1.5.0",
-    "@supabase/supabase-js": "^2.39.0"
+    "node-cron": "^3.0.0",
+    "pino": "^8.0.0",
+    "qrcode": "^1.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
