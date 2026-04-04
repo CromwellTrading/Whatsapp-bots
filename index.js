@@ -65,6 +65,7 @@ let qrActual = '';
 let pairingCode = null;
 let estaConectado = false;
 let scheduledJobs = {};
+let pairingRequested = false; // <-- Bandera para evitar spam de códigos
 
 function iniciarCronJobs(client) {
     Object.values(scheduledJobs).forEach(job => job.stop());
@@ -74,7 +75,6 @@ function iniciarCronJobs(client) {
         if (!task.enabled) return;
         scheduledJobs[index] = cron.schedule(task.cronTime, async () => {
             try {
-                let options = {};
                 if (task.mediaPath && fs.existsSync(task.mediaPath)) {
                     const media = MessageMedia.fromFilePath(task.mediaPath);
                     if (task.targetId === 'status@broadcast') {
@@ -101,8 +101,13 @@ function iniciarCronJobs(client) {
 // ============================================================================
 async function iniciarBot() {
     // Cargar config inicial desde Supabase
-    const { data: configData } = await supabase.from('bot_settings').select('data').eq('id', 'default_config').single();
-    db = configData.data;
+    const { data: configData, error } = await supabase.from('bot_settings').select('data').eq('id', 'default_config').single();
+    if (error || !configData) {
+        console.error("❌ Error cargando configuración de Supabase. Asegúrate de haber ejecutado el SQL. Usando config vacía por defecto.");
+        db = { autoReply: { active: false, text: "Offline.", startHour: 23, endHour: 8, repliedToday: [] }, tasks: [], logGroups: false };
+    } else {
+        db = configData.data;
+    }
 
     const store = new SupabaseStore(supabase);
 
@@ -113,51 +118,77 @@ async function iniciarBot() {
         }),
         puppeteer: {
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu'
+            ]
         }
     });
 
+    // SOLUCIÓN AL SPAM DE CÓDIGOS
     client.on('qr', async (qr) => {
-        console.log('🔄 Esperando vinculación...');
-        if (BOT_PHONE_NUMBER) {
-            try {
-                pairingCode = await client.requestPairingCode(BOT_PHONE_NUMBER);
-                console.log(`\n=========================================\n🔢 TU CÓDIGO DE VINCULACIÓN: ${pairingCode}\n=========================================\n`);
-            } catch (err) { console.error('❌ Error código:', err.message); }
-        } else {
+        if (!BOT_PHONE_NUMBER) {
             qrActual = await qrcode.toDataURL(qr);
+            return;
+        }
+
+        // Freno: Si ya lo pedimos, no lo volvemos a pedir aunque el evento QR se repita
+        if (!pairingRequested) {
+            pairingRequested = true;
+            console.log('⏳ Inicializando solicitud de código (esperando 10s para asegurar que WhatsApp cargó completamente)...');
+            
+            setTimeout(async () => {
+                try {
+                    pairingCode = await client.requestPairingCode(BOT_PHONE_NUMBER);
+                    console.log(`\n=========================================\n🔢 TU CÓDIGO DE VINCULACIÓN: ${pairingCode}\n=========================================\n`);
+                } catch (err) { 
+                    console.error('❌ Error pidiendo código:', err.message);
+                    pairingRequested = false; // Permitimos que lo intente en el próximo ciclo
+                }
+            }, 10000); 
         }
     });
 
     client.on('ready', () => {
         console.log('✅ BOT REFERI MILLOBET CONECTADO EXITOSAMENTE');
-        estaConectado = true; qrActual = ''; pairingCode = null;
+        estaConectado = true; 
+        qrActual = ''; 
+        pairingCode = null;
+        pairingRequested = false; // Reseteamos
         iniciarCronJobs(client);
     });
 
     client.on('disconnected', (reason) => {
         console.log('❌ Bot desconectado:', reason);
         estaConectado = false;
+        pairingRequested = false;
         client.initialize(); 
     });
 
     // ============================================================================
-    // 5. PROCESAMIENTO DE MENSAJES Y COMANDOS (ADAPTADO)
+    // 5. PROCESAMIENTO DE MENSAJES Y COMANDOS
     // ============================================================================
     client.on('message_create', async (msg) => {
         const isFromMe = msg.fromMe;
-        const remoteJid = msg.to; // En wwebjs el destino suele ser 'to' si eres el autor, o 'from' si lo recibes
         const chatId = isFromMe ? msg.to : msg.from;
         const isGroup = chatId.endsWith('@g.us');
         const textMessage = msg.body || "";
 
         // ========== REGISTRO DE GRUPOS ==========
         if (isGroup && !isFromMe && db.logGroups) {
-            let logContent = `📢 *Grupo:* ${(await msg.getChat()).name}\n👤 *De:* ${msg.author || msg.from}\n`;
-            if (textMessage) logContent += `💬 *Mensaje:* ${textMessage}`;
-            else if (msg.hasMedia) logContent += `🖼️/🎥 *Archivo Multimedia*`;
-            else logContent += `📨 *Otro*`;
-            await client.sendMessage(client.info.wid._serialized, logContent);
+            try {
+                let logContent = `📢 *Grupo:* ${(await msg.getChat()).name}\n👤 *De:* ${msg.author || msg.from}\n`;
+                if (textMessage) logContent += `💬 *Mensaje:* ${textMessage}`;
+                else if (msg.hasMedia) logContent += `🖼️/🎥 *Archivo Multimedia*`;
+                else logContent += `📨 *Otro*`;
+                await client.sendMessage(client.info.wid._serialized, logContent);
+            } catch(e) {}
         }
 
         // ========== AUTO-RESPUESTA ==========
@@ -177,7 +208,6 @@ async function iniciarBot() {
             const args = textMessage.slice(1).trim().split(/ +/);
             const command = args.shift().toLowerCase();
 
-            // --- !grupos / !detectid ---
             if (command === 'grupos' || command === 'detectid') {
                 const chats = await client.getChats();
                 const groups = chats.filter(c => c.isGroup);
@@ -186,7 +216,6 @@ async function iniciarBot() {
                 await client.sendMessage(chatId, lista || "No estás en ningún grupo.");
             }
 
-            // --- !addtask / !setreplygroup ---
             if (command === 'addtask' || command === 'setreplygroup') {
                 const targetId = args[0], timeVal = args[1], texto = args.slice(2).join(' ');
                 if (!targetId || !timeVal || !texto) return msg.reply("❌ Formato: !addtask [ID] [HH:MM o minutos] [mensaje]");
@@ -210,7 +239,6 @@ async function iniciarBot() {
                 msg.reply(`✅ Tarea guardada. ${isInterval ? `Cada ${timeVal} min` : `A las ${timeVal}`}`);
             }
 
-            // --- !addstatus / !setreplystatus ---
             if (command === 'addstatus' || command === 'setreplystatus') {
                 const timeVal = args[0], texto = args.slice(1).join(' ');
                 if (!timeVal || !texto) return msg.reply("❌ Formato: !addstatus [HH:MM o minutos] [mensaje]");
@@ -234,7 +262,6 @@ async function iniciarBot() {
                 msg.reply(`✅ Estado programado. ${isInterval ? `Cada ${timeVal} min` : `A las ${timeVal}`}`);
             }
 
-            // --- !listartareas ---
             if (command === 'listartareas') {
                 if (!db.tasks.length) return msg.reply("No hay tareas.");
                 let res = "*📋 Tareas Programadas:*\n";
@@ -247,7 +274,6 @@ async function iniciarBot() {
                 msg.reply(res);
             }
 
-            // --- !borrartarea [ID] ---
             if (command === 'borrartarea') {
                 let idx = parseInt(args[0]);
                 if (db.tasks[idx]) {
@@ -258,7 +284,6 @@ async function iniciarBot() {
                 } else msg.reply("❌ ID inválido.");
             }
 
-            // --- !activartarea / !desactivartarea [ID] ---
             if (command === 'activartarea' || command === 'desactivartarea') {
                 let idx = parseInt(args[0]);
                 if (db.tasks[idx] !== undefined) {
@@ -268,7 +293,6 @@ async function iniciarBot() {
                 } else msg.reply("❌ ID inválido.");
             }
 
-            // --- !estado [texto] (manual) ---
             if (command === 'estado') {
                 let texto = args.join(' ');
                 if (msg.hasMedia) {
@@ -281,7 +305,7 @@ async function iniciarBot() {
                 }
             }
 
-            // --- Comandos de configuración ---
+            // Comandos de configuración
             if (command === 'autoreply') {
                 let mode = args[0];
                 if (mode === 'on' || mode === 'off') { db.autoReply.active = (mode === 'on'); saveDB(); msg.reply(`✅ Auto-respuesta ${mode.toUpperCase()}.`); }
@@ -321,7 +345,7 @@ app.get('/', (req, res) => {
             <div style="font-family:sans-serif;text-align:center;margin-top:50px;">
                 <h1>🔢 Código de vinculación</h1>
                 <div style="font-size:48px;font-weight:bold;background:#f0f0f0;padding:20px;border-radius:10px;display:inline-block;margin:20px;letter-spacing:2px;">${pairingCode}</div>
-                <p>Ingresa este código en WhatsApp.</p>
+                <p>Ingresa este código en tu WhatsApp.</p>
                 <script>setTimeout(() => location.reload(), 5000);</script>
             </div>
         `);
@@ -334,7 +358,7 @@ app.get('/', (req, res) => {
             </div>
         `);
     } else {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ Extrayendo datos desde Supabase e iniciando sistema...</h1><script>setTimeout(()=>location.reload(),3000);</script></div>');
+        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ Extrayendo datos e iniciando sistema... Espera unos segundos.</h1><script>setTimeout(()=>location.reload(),3000);</script></div>');
     }
 });
 
