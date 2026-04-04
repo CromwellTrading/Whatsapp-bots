@@ -1,7 +1,8 @@
 FROM node:20-bullseye-slim
 
-# Instalar dependencias del sistema
+# Instalar dependencias del sistema y CERTIFICADOS DE SEGURIDAD
 RUN apt-get update && apt-get install -y \
+    ca-certificates \
     chromium \
     git \
     openssh-client \
@@ -14,7 +15,7 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
-# FORZAR A GIT A USAR HTTPS EN LUGAR DE SSH (El salvavidas)
+# FORZAR A GIT A USAR HTTPS EN LUGAR DE SSH
 RUN git config --global url."https://github.com/".insteadOf ssh://git@github.com/
 
 # Copiar el package.json
