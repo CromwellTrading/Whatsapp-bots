@@ -24,7 +24,7 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-let db = null; // Almacenará la config traída de Supabase
+let db = null; 
 const saveDB = () => supabase.from('bot_settings').update({ data: db }).eq('id', 'default_config').then();
 
 // Adaptador para guardar el .zip de la sesión de WhatsApp en PostgreSQL
@@ -65,7 +65,7 @@ let qrActual = '';
 let pairingCode = null;
 let estaConectado = false;
 let scheduledJobs = {};
-let pairingRequested = false; // <-- Bandera para evitar spam de códigos
+let pairingRequested = false; // Freno para evitar spam de códigos
 
 function iniciarCronJobs(client) {
     Object.values(scheduledJobs).forEach(job => job.stop());
@@ -103,7 +103,7 @@ async function iniciarBot() {
     // Cargar config inicial desde Supabase
     const { data: configData, error } = await supabase.from('bot_settings').select('data').eq('id', 'default_config').single();
     if (error || !configData) {
-        console.error("❌ Error cargando configuración de Supabase. Asegúrate de haber ejecutado el SQL. Usando config vacía por defecto.");
+        console.error("❌ Error cargando configuración de Supabase. Usando config por defecto.");
         db = { autoReply: { active: false, text: "Offline.", startHour: 23, endHour: 8, repliedToday: [] }, tasks: [], logGroups: false };
     } else {
         db = configData.data;
@@ -116,6 +116,7 @@ async function iniciarBot() {
             store: store,
             backupSyncIntervalMs: 300000 // Respaldo cada 5 min
         }),
+        webVersionCache: { type: "none" }, // IGNORAR CACHÉ (Solución a window.onCodeReceivedEvent is not a function)
         puppeteer: {
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
             args: [
@@ -131,17 +132,15 @@ async function iniciarBot() {
         }
     });
 
-    // SOLUCIÓN AL SPAM DE CÓDIGOS
     client.on('qr', async (qr) => {
         if (!BOT_PHONE_NUMBER) {
             qrActual = await qrcode.toDataURL(qr);
             return;
         }
 
-        // Freno: Si ya lo pedimos, no lo volvemos a pedir aunque el evento QR se repita
         if (!pairingRequested) {
             pairingRequested = true;
-            console.log('⏳ Inicializando solicitud de código (esperando 10s para asegurar que WhatsApp cargó completamente)...');
+            console.log('⏳ Solicitando código (esperando 10s para asegurar que la web de WhatsApp cargó por completo)...');
             
             setTimeout(async () => {
                 try {
@@ -149,7 +148,7 @@ async function iniciarBot() {
                     console.log(`\n=========================================\n🔢 TU CÓDIGO DE VINCULACIÓN: ${pairingCode}\n=========================================\n`);
                 } catch (err) { 
                     console.error('❌ Error pidiendo código:', err.message);
-                    pairingRequested = false; // Permitimos que lo intente en el próximo ciclo
+                    pairingRequested = false; // Permitimos un reintento si falla
                 }
             }, 10000); 
         }
@@ -160,7 +159,7 @@ async function iniciarBot() {
         estaConectado = true; 
         qrActual = ''; 
         pairingCode = null;
-        pairingRequested = false; // Reseteamos
+        pairingRequested = false; 
         iniciarCronJobs(client);
     });
 
@@ -180,7 +179,6 @@ async function iniciarBot() {
         const isGroup = chatId.endsWith('@g.us');
         const textMessage = msg.body || "";
 
-        // ========== REGISTRO DE GRUPOS ==========
         if (isGroup && !isFromMe && db.logGroups) {
             try {
                 let logContent = `📢 *Grupo:* ${(await msg.getChat()).name}\n👤 *De:* ${msg.author || msg.from}\n`;
@@ -191,7 +189,6 @@ async function iniciarBot() {
             } catch(e) {}
         }
 
-        // ========== AUTO-RESPUESTA ==========
         if (!isGroup && !isFromMe && db.autoReply.active && chatId !== 'status@broadcast') {
             const hora = parseInt(new Date().toLocaleString("en-US", { timeZone: ZONA_HORARIA, hour: 'numeric', hour12: false }));
             const { startHour, endHour, repliedToday, text } = db.autoReply;
@@ -203,7 +200,6 @@ async function iniciarBot() {
             }
         }
 
-        // ========== GESTOR DE COMANDOS (SOLO DUEÑO) ==========
         if (isFromMe && textMessage.startsWith('!')) {
             const args = textMessage.slice(1).trim().split(/ +/);
             const command = args.shift().toLowerCase();
@@ -305,7 +301,6 @@ async function iniciarBot() {
                 }
             }
 
-            // Comandos de configuración
             if (command === 'autoreply') {
                 let mode = args[0];
                 if (mode === 'on' || mode === 'off') { db.autoReply.active = (mode === 'on'); saveDB(); msg.reply(`✅ Auto-respuesta ${mode.toUpperCase()}.`); }
@@ -332,10 +327,8 @@ async function iniciarBot() {
     client.initialize();
 }
 
-iniciarBot();
-
 // ============================================================================
-// 6. SERVIDOR WEB
+// 6. SERVIDOR WEB Y ARRANQUE RETRASADO (30 SEGUNDOS)
 // ============================================================================
 app.get('/', (req, res) => {
     if (estaConectado) {
@@ -358,8 +351,17 @@ app.get('/', (req, res) => {
             </div>
         `);
     } else {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ Extrayendo datos e iniciando sistema... Espera unos segundos.</h1><script>setTimeout(()=>location.reload(),3000);</script></div>');
+        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ Desplegando servicio... El bot iniciará en breve.</h1><script>setTimeout(()=>location.reload(),5000);</script></div>');
     }
 });
 
-app.listen(PORT, () => console.log(`🌐 Servidor web escuchando en puerto ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`🌐 Servidor web escuchando en puerto ${PORT}`);
+    console.log(`⏳ Esperando 30 segundos para que Render estabilice el despliegue...`);
+    
+    // Retraso intencional antes de lanzar puppeteer
+    setTimeout(() => {
+        console.log(`🚀 Iniciando el núcleo de WhatsApp...`);
+        iniciarBot();
+    }, 30000);
+});
