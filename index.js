@@ -1,348 +1,199 @@
 require('dotenv').config();
-const { Client, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
-const { createClient } = require('@supabase/supabase-js');
+const { default: makeWASocket, DisconnectReason, downloadMediaMessage, Browsers, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
-const fs = require('fs');
 const cron = require('node-cron');
+const fs = require('fs');
+const { createClient } = require('@supabase/supabase-js');
 
 // ============================================================================
-// 1. CONFIGURACIÓN DEL ENTORNO
+// 1. CONFIGURACIÓN DEL ENTORNO Y SUPABASE
 // ============================================================================
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ZONA_HORARIA = process.env.TZ || "America/Havana";
-const MEDIA_DIR = './media';
 const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || null;
+const MEDIA_DIR = './media';
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
 
-// ============================================================================
-// 2. CONEXIÓN A SUPABASE Y CUSTOM STORE PARA SESIÓN
-// ============================================================================
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-let db = null; 
+let db = null;
 const saveDB = () => supabase.from('bot_settings').update({ data: db }).eq('id', 'default_config').then();
 
-// Adaptador para guardar el .zip de la sesión de WhatsApp en PostgreSQL
-class SupabaseStore {
-    constructor(client) { this.supabase = client; }
-    
-    async sessionExists({ session }) {
-        const { data } = await this.supabase.from('whatsapp_sessions').select('id').eq('id', session).maybeSingle();
-        return !!data;
-    }
-    
-    async save({ session }) {
-        const zipPath = `${session}.zip`;
-        if (!fs.existsSync(zipPath)) return;
-        const buffer = fs.readFileSync(zipPath);
-        const base64Data = buffer.toString('base64');
-        await this.supabase.from('whatsapp_sessions').upsert({ id: session, session_data: base64Data });
-        console.log('💾 Sesión empaquetada y respaldada en Supabase.');
-    }
-    
-    async extract({ session }) {
-        const { data } = await this.supabase.from('whatsapp_sessions').select('session_data').eq('id', session).maybeSingle();
-        if (data && data.session_data) {
-            fs.writeFileSync(`${session}.zip`, Buffer.from(data.session_data, 'base64'));
-            console.log('📦 Sesión descargada y extraída de Supabase.');
-        }
-    }
-    
-    async delete({ session }) {
-        await this.supabase.from('whatsapp_sessions').delete().eq('id', session);
-    }
-}
-
-// ============================================================================
-// 3. ESTADOS GLOBALES Y CRON JOBS
-// ============================================================================
 let qrActual = '';
 let pairingCode = null;
 let estaConectado = false;
 let scheduledJobs = {};
-let pairingRequested = false; // Freno para evitar spam de códigos
+let pairingRequested = false;
 
-function iniciarCronJobs(client) {
+// ============================================================================
+// 2. ADAPTADOR DE SESIÓN DE BAILEYS PARA SUPABASE
+// ============================================================================
+async function useSupabaseAuthState(sessionName) {
+    const writeData = async (data, id) => {
+        const json = JSON.stringify(data, BufferJSON.replacer);
+        await supabase.from('whatsapp_sessions').upsert({ id: `${sessionName}-${id}`, session_data: json });
+    };
+
+    const readData = async (id) => {
+        const { data } = await supabase.from('whatsapp_sessions').select('session_data').eq('id', `${sessionName}-${id}`).maybeSingle();
+        if (data) return JSON.parse(data.session_data, BufferJSON.reviver);
+        return null;
+    };
+
+    const removeData = async (id) => {
+        await supabase.from('whatsapp_sessions').delete().eq('id', `${sessionName}-${id}`);
+    };
+
+    const creds = await readData('creds') || initAuthCreds();
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    await Promise.all(ids.map(async (id) => {
+                        let value = await readData(`${type}-${id}`);
+                        if (type === 'app-state-sync-key' && value) {
+                            value = baileys.proto.Message.AppStateSyncKeyData.fromObject(value);
+                        }
+                        data[id] = value;
+                    }));
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category of Object.keys(data)) {
+                        for (const id of Object.keys(data[category])) {
+                            const value = data[category][id];
+                            const key = `${category}-${id}`;
+                            if (value) tasks.push(writeData(value, key));
+                            else tasks.push(removeData(key));
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
+            }
+        },
+        saveCreds: () => writeData(creds, 'creds')
+    };
+}
+
+// ============================================================================
+// 3. MOTOR DE TAREAS
+// ============================================================================
+function iniciarCronJobs(sock) {
     Object.values(scheduledJobs).forEach(job => job.stop());
     scheduledJobs = {};
-    
     db.tasks.forEach((task, index) => {
         if (!task.enabled) return;
         scheduledJobs[index] = cron.schedule(task.cronTime, async () => {
             try {
-                if (task.mediaPath && fs.existsSync(task.mediaPath)) {
-                    const media = MessageMedia.fromFilePath(task.mediaPath);
-                    if (task.targetId === 'status@broadcast') {
-                        await client.sendMessage('status@broadcast', media, { caption: task.message });
-                    } else {
-                        await client.sendMessage(task.targetId, media, { caption: task.message });
-                    }
-                } else {
-                    await client.sendMessage(task.targetId, task.message);
-                }
-            } catch(e) { console.error("Error en tarea cron:", e); }
+                let content = {};
+                if (task.mediaPath && fs.existsSync(task.mediaPath)) content = { image: fs.readFileSync(task.mediaPath), caption: task.message };
+                else content = { text: task.message };
+                if (task.targetId === 'status@broadcast') await sock.sendMessage('status@broadcast', content, { statusJidList: [sock.user.id] });
+                else await sock.sendMessage(task.targetId, content);
+            } catch(e) { console.error(e); }
         }, { timezone: ZONA_HORARIA });
     });
-
-    // Resetear auto-respuestas diarias al mediodía
-    cron.schedule('0 12 * * *', () => { 
-        db.autoReply.repliedToday = []; 
-        saveDB(); 
-    }, { timezone: ZONA_HORARIA });
+    cron.schedule('0 12 * * *', () => { db.autoReply.repliedToday = []; saveDB(); }, { timezone: ZONA_HORARIA });
 }
 
 // ============================================================================
-// 4. INICIALIZACIÓN DEL NÚCLEO (WHATSAPP WEB JS)
+// 4. INICIO DEL BOT (BAILEYS)
 // ============================================================================
-async function iniciarBot() {
-    // Cargar config inicial desde Supabase
+async function connectToWhatsApp() {
     const { data: configData, error } = await supabase.from('bot_settings').select('data').eq('id', 'default_config').single();
-    if (error || !configData) {
-        console.error("❌ Error cargando configuración de Supabase. Usando config por defecto.");
-        db = { autoReply: { active: false, text: "Offline.", startHour: 23, endHour: 8, repliedToday: [] }, tasks: [], logGroups: false };
-    } else {
-        db = configData.data;
-    }
+    if (error || !configData) db = { autoReply: { active: false, text: "Offline.", startHour: 23, endHour: 8, repliedToday: [] }, tasks: [], logGroups: false };
+    else db = configData.data;
 
-    const store = new SupabaseStore(supabase);
+    const { state, saveCreds } = await useSupabaseAuthState('referi');
 
-    const client = new Client({
-        authStrategy: new RemoteAuth({
-            store: store,
-            backupSyncIntervalMs: 300000 // Respaldo cada 5 min
-        }),
-        webVersionCache: { type: "none" }, // IGNORAR CACHÉ (Solución a window.onCodeReceivedEvent is not a function)
-        puppeteer: {
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-            args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ]
-        }
+    const sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        browser: Browsers.macOS('Desktop'),
+        printQRInTerminal: false,
+        syncFullHistory: false
     });
 
-    client.on('qr', async (qr) => {
-        if (!BOT_PHONE_NUMBER) {
-            qrActual = await qrcode.toDataURL(qr);
-            return;
-        }
+    sock.ev.on('creds.update', saveCreds);
 
-        if (!pairingRequested) {
-            pairingRequested = true;
-            console.log('⏳ Solicitando código (esperando 10s para asegurar que la web de WhatsApp cargó por completo)...');
-            
-            setTimeout(async () => {
-                try {
-                    pairingCode = await client.requestPairingCode(BOT_PHONE_NUMBER);
-                    console.log(`\n=========================================\n🔢 TU CÓDIGO DE VINCULACIÓN: ${pairingCode}\n=========================================\n`);
-                } catch (err) { 
-                    console.error('❌ Error pidiendo código:', err.message);
-                    pairingRequested = false; // Permitimos un reintento si falla
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr && !state.creds.registered) {
+            if (BOT_PHONE_NUMBER) {
+                if (!pairingRequested) {
+                    pairingRequested = true;
+                    console.log(`⏳ Generando código para +${BOT_PHONE_NUMBER}...`);
+                    setTimeout(async () => {
+                        try {
+                            const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+                            pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                            console.log(`\n=========================================\n🔢 CÓDIGO DE VINCULACIÓN EN LOGS: ${pairingCode}\n=========================================\n`);
+                        } catch (err) {
+                            console.error('❌ Error código:', err.message);
+                            pairingRequested = false;
+                        }
+                    }, 3000); 
                 }
-            }, 10000); 
-        }
-    });
-
-    client.on('ready', () => {
-        console.log('✅ BOT REFERI MILLOBET CONECTADO EXITOSAMENTE');
-        estaConectado = true; 
-        qrActual = ''; 
-        pairingCode = null;
-        pairingRequested = false; 
-        iniciarCronJobs(client);
-    });
-
-    client.on('disconnected', (reason) => {
-        console.log('❌ Bot desconectado:', reason);
-        estaConectado = false;
-        pairingRequested = false;
-        client.initialize(); 
-    });
-
-    // ============================================================================
-    // 5. PROCESAMIENTO DE MENSAJES Y COMANDOS
-    // ============================================================================
-    client.on('message_create', async (msg) => {
-        const isFromMe = msg.fromMe;
-        const chatId = isFromMe ? msg.to : msg.from;
-        const isGroup = chatId.endsWith('@g.us');
-        const textMessage = msg.body || "";
-
-        if (isGroup && !isFromMe && db.logGroups) {
-            try {
-                let logContent = `📢 *Grupo:* ${(await msg.getChat()).name}\n👤 *De:* ${msg.author || msg.from}\n`;
-                if (textMessage) logContent += `💬 *Mensaje:* ${textMessage}`;
-                else if (msg.hasMedia) logContent += `🖼️/🎥 *Archivo Multimedia*`;
-                else logContent += `📨 *Otro*`;
-                await client.sendMessage(client.info.wid._serialized, logContent);
-            } catch(e) {}
-        }
-
-        if (!isGroup && !isFromMe && db.autoReply.active && chatId !== 'status@broadcast') {
-            const hora = parseInt(new Date().toLocaleString("en-US", { timeZone: ZONA_HORARIA, hour: 'numeric', hour12: false }));
-            const { startHour, endHour, repliedToday, text } = db.autoReply;
-            const sleeping = startHour > endHour ? (hora >= startHour || hora < endHour) : (hora >= startHour && hora < endHour);
-            if (sleeping && !repliedToday.includes(chatId)) {
-                await msg.reply(text);
-                db.autoReply.repliedToday.push(chatId);
-                saveDB();
+            } else {
+                qrActual = await qrcode.toDataURL(qr);
+                console.log("✅ QR generado en la web.");
             }
         }
 
-        if (isFromMe && textMessage.startsWith('!')) {
-            const args = textMessage.slice(1).trim().split(/ +/);
-            const command = args.shift().toLowerCase();
+        if (connection === 'close') {
+            const statusCode = lastDisconnect.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            estaConectado = false;
 
-            if (command === 'grupos' || command === 'detectid') {
-                const chats = await client.getChats();
-                const groups = chats.filter(c => c.isGroup);
-                let lista = "*📋 Tus Grupos Activos:*\n";
-                groups.forEach(g => lista += `\n👥 *${g.name}*\n🆔 \`${g.id._serialized}\`\n`);
-                await client.sendMessage(chatId, lista || "No estás en ningún grupo.");
+            if (statusCode === 405 || statusCode === 401 || !shouldReconnect) {
+                console.log('⚠️ Sesión rota o desvinculada. Limpiando Supabase...');
+                qrActual = ''; pairingCode = null; pairingRequested = false;
+                await supabase.from('whatsapp_sessions').delete().like('id', 'referi-%');
+                setTimeout(connectToWhatsApp, 3000);
+            } else {
+                console.log(`❌ Conexión interrumpida (Código: ${statusCode}). Reconectando...`);
+                setTimeout(connectToWhatsApp, 5000);
             }
-
-            if (command === 'addtask' || command === 'setreplygroup') {
-                const targetId = args[0], timeVal = args[1], texto = args.slice(2).join(' ');
-                if (!targetId || !timeVal || !texto) return msg.reply("❌ Formato: !addtask [ID] [HH:MM o minutos] [mensaje]");
-                
-                let cronExp, isInterval;
-                if (timeVal.includes(':')) { const [h,m] = timeVal.split(':'); cronExp = `${m} ${h} * * *`; isInterval = false; }
-                else { cronExp = `*/${timeVal} * * * *`; isInterval = true; }
-                
-                let mediaPath = null;
-                if (msg.hasQuotedMsg) {
-                    const quoted = await msg.getQuotedMessage();
-                    if (quoted.hasMedia) {
-                        const media = await quoted.downloadMedia();
-                        mediaPath = `${MEDIA_DIR}/img_${Date.now()}.${media.mimetype.split('/')[1]}`;
-                        fs.writeFileSync(mediaPath, Buffer.from(media.data, 'base64'));
-                    }
-                }
-                
-                db.tasks.push({ targetId, cronTime: cronExp, message: texto, mediaPath, isInterval, enabled: true });
-                saveDB(); iniciarCronJobs(client);
-                msg.reply(`✅ Tarea guardada. ${isInterval ? `Cada ${timeVal} min` : `A las ${timeVal}`}`);
-            }
-
-            if (command === 'addstatus' || command === 'setreplystatus') {
-                const timeVal = args[0], texto = args.slice(1).join(' ');
-                if (!timeVal || !texto) return msg.reply("❌ Formato: !addstatus [HH:MM o minutos] [mensaje]");
-                
-                let cronExp, isInterval;
-                if (timeVal.includes(':')) { const [h,m] = timeVal.split(':'); cronExp = `${m} ${h} * * *`; isInterval = false; }
-                else { cronExp = `*/${timeVal} * * * *`; isInterval = true; }
-                
-                let mediaPath = null;
-                if (msg.hasQuotedMsg) {
-                    const quoted = await msg.getQuotedMessage();
-                    if (quoted.hasMedia) {
-                        const media = await quoted.downloadMedia();
-                        mediaPath = `${MEDIA_DIR}/img_${Date.now()}.${media.mimetype.split('/')[1]}`;
-                        fs.writeFileSync(mediaPath, Buffer.from(media.data, 'base64'));
-                    }
-                }
-                
-                db.tasks.push({ targetId: 'status@broadcast', cronTime: cronExp, message: texto, mediaPath, isInterval, enabled: true });
-                saveDB(); iniciarCronJobs(client);
-                msg.reply(`✅ Estado programado. ${isInterval ? `Cada ${timeVal} min` : `A las ${timeVal}`}`);
-            }
-
-            if (command === 'listartareas') {
-                if (!db.tasks.length) return msg.reply("No hay tareas.");
-                let res = "*📋 Tareas Programadas:*\n";
-                db.tasks.forEach((t,i) => {
-                    const destino = t.targetId === 'status@broadcast' ? '🟢 Estado' : '👥 Grupo';
-                    const foto = t.mediaPath ? '🖼️ Sí' : '📝 Solo texto';
-                    const estado = t.enabled ? '✅ Activa' : '❌ Inactiva';
-                    res += `\n*ID ${i}* (${estado})\n📍 ${destino}\n⏱️ Cron: ${t.cronTime}\n📎 Foto: ${foto}\n💬 Texto: ${t.message.substring(0,30)}...\n`;
-                });
-                msg.reply(res);
-            }
-
-            if (command === 'borrartarea') {
-                let idx = parseInt(args[0]);
-                if (db.tasks[idx]) {
-                    if (db.tasks[idx].mediaPath && fs.existsSync(db.tasks[idx].mediaPath)) fs.unlinkSync(db.tasks[idx].mediaPath);
-                    db.tasks.splice(idx,1);
-                    saveDB(); iniciarCronJobs(client);
-                    msg.reply(`✅ Tarea ${idx} eliminada.`);
-                } else msg.reply("❌ ID inválido.");
-            }
-
-            if (command === 'activartarea' || command === 'desactivartarea') {
-                let idx = parseInt(args[0]);
-                if (db.tasks[idx] !== undefined) {
-                    db.tasks[idx].enabled = (command === 'activartarea');
-                    saveDB(); iniciarCronJobs(client);
-                    msg.reply(`✅ Tarea ${idx} ${command==='activartarea'?'activada':'desactivada'}.`);
-                } else msg.reply("❌ ID inválido.");
-            }
-
-            if (command === 'estado') {
-                let texto = args.join(' ');
-                if (msg.hasMedia) {
-                    const media = await msg.downloadMedia();
-                    await client.sendMessage('status@broadcast', media, { caption: texto });
-                    msg.reply("✅ Estado con imagen publicado.");
-                } else {
-                    await client.sendMessage('status@broadcast', texto);
-                    msg.reply("✅ Estado publicado.");
-                }
-            }
-
-            if (command === 'autoreply') {
-                let mode = args[0];
-                if (mode === 'on' || mode === 'off') { db.autoReply.active = (mode === 'on'); saveDB(); msg.reply(`✅ Auto-respuesta ${mode.toUpperCase()}.`); }
-            }
-            if (command === 'sethoras') {
-                let inicio = parseInt(args[0]), fin = parseInt(args[1]);
-                if (!isNaN(inicio) && !isNaN(fin)) { db.autoReply.startHour = inicio; db.autoReply.endHour = fin; saveDB(); msg.reply(`✅ Horario dormir: ${inicio}:00 - ${fin}:00.`); }
-            }
-            if (command === 'setreplytext') {
-                let nuevo = args.join(' ');
-                if (nuevo) { db.autoReply.text = nuevo; saveDB(); msg.reply("✅ Mensaje auto-respuesta actualizado."); }
-            }
-            if (command === 'loggroups') {
-                let mode = args[0];
-                if (mode === 'on' || mode === 'off') { db.logGroups = (mode === 'on'); saveDB(); msg.reply(`✅ Registro grupos ${mode.toUpperCase()}.`); }
-            }
-            if (command === 'mostrarconfig') {
-                let msj = `🔁 Auto-respuesta: ${db.autoReply.active?'ACTIVA':'INACTIVA'}\n⏰ Horario: ${db.autoReply.startHour}:00-${db.autoReply.endHour}:00\n📝 Texto: ${db.autoReply.text}\n📊 Tareas: ${db.tasks.length} (${db.tasks.filter(t=>t.enabled).length} activas)\n📢 Log grupos: ${db.logGroups?'ACTIVO':'INACTIVO'}`;
-                msg.reply(msj);
-            }
+        } else if (connection === 'open') {
+            estaConectado = true; qrActual = ''; pairingCode = null;
+            console.log('✅ BOT REFERI MILLOBET CONECTADO EXITOSAMENTE');
+            iniciarCronJobs(sock);
         }
     });
 
-    client.initialize();
+    // Procesamiento de comandos
+    sock.ev.on('messages.upsert', async (m) => {
+        if (m.type !== 'notify') return;
+        const msg = m.messages[0];
+        if (!msg.message) return;
+
+        const remoteJid = msg.key.remoteJid;
+        const isFromMe = msg.key.fromMe;
+        const isGroup = remoteJid.endsWith('@g.us');
+        const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "";
+
+        if (isFromMe && textMessage.startsWith('!ping')) {
+            await sock.sendMessage(remoteJid, { text: '✅ Pong! Bot funcionando con Baileys + Supabase.' });
+        }
+    });
 }
 
 // ============================================================================
-// 6. SERVIDOR WEB Y ARRANQUE RETRASADO (30 SEGUNDOS)
+// 5. SERVIDOR WEB
 // ============================================================================
 app.get('/', (req, res) => {
     if (estaConectado) {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1 style="color:green;">✅ REFERI MILLOBET EN LÍNEA</h1><p>Conectado a WhatsApp y sesión respaldada en Supabase.</p></div>');
-    } else if (pairingCode) {
-        res.send(`
-            <div style="font-family:sans-serif;text-align:center;margin-top:50px;">
-                <h1>🔢 Código de vinculación</h1>
-                <div style="font-size:48px;font-weight:bold;background:#f0f0f0;padding:20px;border-radius:10px;display:inline-block;margin:20px;letter-spacing:2px;">${pairingCode}</div>
-                <p>Ingresa este código en tu WhatsApp.</p>
-                <script>setTimeout(() => location.reload(), 5000);</script>
-            </div>
-        `);
-    } else if (qrActual) {
+        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1 style="color:green;">✅ REFERI MILLOBET EN LÍNEA</h1><p>Conectado a WhatsApp con Baileys y respaldado en Supabase.</p></div>');
+    } else if (qrActual && !BOT_PHONE_NUMBER) {
         res.send(`
             <div style="font-family:sans-serif;text-align:center;margin-top:50px;">
                 <h1>📱 Escanea el código QR</h1>
@@ -351,17 +202,11 @@ app.get('/', (req, res) => {
             </div>
         `);
     } else {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ Desplegando servicio... El bot iniciará en breve.</h1><script>setTimeout(()=>location.reload(),5000);</script></div>');
+        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ El bot está arrancando...</h1><p><b>Por favor, mira los Logs de Render para ver tu código de vinculación.</b></p><script>setTimeout(()=>location.reload(),5000);</script></div>');
     }
 });
 
 app.listen(PORT, () => {
-    console.log(`🌐 Servidor web escuchando en puerto ${PORT}`);
-    console.log(`⏳ Esperando 30 segundos para que Render estabilice el despliegue...`);
-    
-    // Retraso intencional antes de lanzar puppeteer
-    setTimeout(() => {
-        console.log(`🚀 Iniciando el núcleo de WhatsApp...`);
-        iniciarBot();
-    }, 30000);
+    console.log(`🌐 Servidor web en puerto ${PORT}`);
+    connectToWhatsApp();
 });
