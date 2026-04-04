@@ -1,25 +1,24 @@
-FROM node:18-bullseye-slim
+FROM node:18-slim
 
-# Instalar Chromium, GIT y dependencias necesarias para Puppeteer
+# Instalar dependencias del sistema necesarias para Baileys (sin puppeteer)
 RUN apt-get update && apt-get install -y \
-    chromium \
     git \
-    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf libxss1 \
-    --no-install-recommends \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-# Configurar variables de entorno para que Puppeteer use el Chromium que instalamos
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
-# Copiar archivos e instalar dependencias
+# Copiar package.json y package-lock.json (si existe)
 COPY package*.json ./
-# Instalamos la nueva librería y las necesarias para la web
-RUN npm install whatsapp-web.js qrcode express
 
+# Instalar solo dependencias de producción
+RUN npm ci --only=production
+
+# Copiar el resto del código
 COPY . .
 
+# Exponer el puerto que usará Express
 EXPOSE 3000
-CMD ["node", "index.js"]
+
+# Comando para iniciar el bot
+CMD ["npm", "start"]
