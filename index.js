@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { default: makeWASocket, DisconnectReason, downloadMediaMessage, Browsers, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, Browsers, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
@@ -21,7 +21,13 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
 
 let db = null;
-const saveDB = () => supabase.from('bot_settings').update({ data: db }).eq('id', 'default_config').then();
+const saveDB = async () => {
+    try {
+        await supabase.from('bot_settings').update({ data: db }).eq('id', 'default_config');
+    } catch (err) {
+        console.error('❌ Error guardando configuración en DB:', err.message);
+    }
+};
 
 let qrActual = '';
 let pairingCode = null;
@@ -30,22 +36,40 @@ let scheduledJobs = {};
 let pairingRequested = false;
 
 // ============================================================================
-// 2. ADAPTADOR DE SESIÓN DE BAILEYS PARA SUPABASE
+// 2. ADAPTADOR DE SESIÓN DE BAILEYS PARA SUPABASE MEJORADO
 // ============================================================================
 async function useSupabaseAuthState(sessionName) {
     const writeData = async (data, id) => {
-        const json = JSON.stringify(data, BufferJSON.replacer);
-        await supabase.from('whatsapp_sessions').upsert({ id: `${sessionName}-${id}`, session_data: json });
+        try {
+            const json = JSON.stringify(data, BufferJSON.replacer);
+            const { error } = await supabase.from('whatsapp_sessions').upsert({ id: `${sessionName}-${id}`, session_data: json });
+            if (error) {
+                console.error(`❌ Supabase rechazó escribir [${id}]:`, error.message);
+            }
+        } catch (err) {
+            console.error(`❌ Error fatal escribiendo [${id}]:`, err.message);
+        }
     };
 
     const readData = async (id) => {
-        const { data } = await supabase.from('whatsapp_sessions').select('session_data').eq('id', `${sessionName}-${id}`).maybeSingle();
-        if (data) return JSON.parse(data.session_data, BufferJSON.reviver);
-        return null;
+        try {
+            const { data, error } = await supabase.from('whatsapp_sessions').select('session_data').eq('id', `${sessionName}-${id}`).maybeSingle();
+            if (error) console.error(`❌ Supabase rechazó leer [${id}]:`, error.message);
+            if (data) return JSON.parse(data.session_data, BufferJSON.reviver);
+            return null;
+        } catch (err) {
+            console.error(`❌ Error fatal leyendo [${id}]:`, err.message);
+            return null;
+        }
     };
 
     const removeData = async (id) => {
-        await supabase.from('whatsapp_sessions').delete().eq('id', `${sessionName}-${id}`);
+        try {
+            const { error } = await supabase.from('whatsapp_sessions').delete().eq('id', `${sessionName}-${id}`);
+            if (error) console.error(`❌ Supabase rechazó borrar [${id}]:`, error.message);
+        } catch (err) {
+            console.error(`❌ Error fatal borrando [${id}]:`, err.message);
+        }
     };
 
     const creds = await readData('creds') || initAuthCreds();
@@ -59,7 +83,8 @@ async function useSupabaseAuthState(sessionName) {
                     await Promise.all(ids.map(async (id) => {
                         let value = await readData(`${type}-${id}`);
                         if (type === 'app-state-sync-key' && value) {
-                            value = baileys.proto.Message.AppStateSyncKeyData.fromObject(value);
+                            // Carga correcta de las llaves usando prototipos de Baileys
+                            value = require('@whiskeysockets/baileys').proto.Message.AppStateSyncKeyData.fromObject(value);
                         }
                         data[id] = value;
                     }));
@@ -89,6 +114,8 @@ async function useSupabaseAuthState(sessionName) {
 function iniciarCronJobs(sock) {
     Object.values(scheduledJobs).forEach(job => job.stop());
     scheduledJobs = {};
+    if (!db || !db.tasks) return;
+
     db.tasks.forEach((task, index) => {
         if (!task.enabled) return;
         scheduledJobs[index] = cron.schedule(task.cronTime, async () => {
@@ -98,7 +125,7 @@ function iniciarCronJobs(sock) {
                 else content = { text: task.message };
                 if (task.targetId === 'status@broadcast') await sock.sendMessage('status@broadcast', content, { statusJidList: [sock.user.id] });
                 else await sock.sendMessage(task.targetId, content);
-            } catch(e) { console.error(e); }
+            } catch(e) { console.error('Error en tarea programada:', e); }
         }, { timezone: ZONA_HORARIA });
     });
     cron.schedule('0 12 * * *', () => { db.autoReply.repliedToday = []; saveDB(); }, { timezone: ZONA_HORARIA });
@@ -108,83 +135,99 @@ function iniciarCronJobs(sock) {
 // 4. INICIO DEL BOT (BAILEYS)
 // ============================================================================
 async function connectToWhatsApp() {
-    const { data: configData, error } = await supabase.from('bot_settings').select('data').eq('id', 'default_config').single();
-    if (error || !configData) db = { autoReply: { active: false, text: "Offline.", startHour: 23, endHour: 8, repliedToday: [] }, tasks: [], logGroups: false };
-    else db = configData.data;
+    try {
+        const { data: configData, error } = await supabase.from('bot_settings').select('data').eq('id', 'default_config').maybeSingle();
+        
+        if (error) console.error("⚠️ Error leyendo bot_settings de Supabase:", error.message);
+        
+        if (!configData) {
+            console.log("⚠️ Creando configuración por defecto en memoria.");
+            db = { autoReply: { active: false, text: "Offline.", startHour: 23, endHour: 8, repliedToday: [] }, tasks: [], logGroups: false };
+        } else {
+            db = configData.data;
+        }
 
-    const { state, saveCreds } = await useSupabaseAuthState('referi');
+        const { state, saveCreds } = await useSupabaseAuthState('referi');
 
-    const sock = makeWASocket({
-        auth: state,
-        logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'),
-        printQRInTerminal: false,
-        syncFullHistory: false
-    });
+        const sock = makeWASocket({
+            auth: state,
+            logger: pino({ level: 'silent' }), // Puedes cambiar 'silent' a 'info' temporalmente si quieres ver todo el log de Baileys
+            browser: Browsers.macOS('Desktop'),
+            printQRInTerminal: false,
+            syncFullHistory: false
+        });
 
-    sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
 
-        if (qr && !state.creds.registered) {
-            if (BOT_PHONE_NUMBER) {
-                if (!pairingRequested) {
-                    pairingRequested = true;
-                    console.log(`⏳ Generando código para +${BOT_PHONE_NUMBER}...`);
-                    setTimeout(async () => {
-                        try {
-                            const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-                            pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-                            console.log(`\n=========================================\n🔢 CÓDIGO DE VINCULACIÓN EN LOGS: ${pairingCode}\n=========================================\n`);
-                        } catch (err) {
-                            console.error('❌ Error código:', err.message);
-                            pairingRequested = false;
-                        }
-                    }, 3000); 
+            if (qr && !state.creds.registered) {
+                if (BOT_PHONE_NUMBER) {
+                    if (!pairingRequested) {
+                        pairingRequested = true;
+                        console.log(`⏳ Generando código para +${BOT_PHONE_NUMBER} (esperando 5s para evitar bloqueos)...`);
+                        setTimeout(async () => {
+                            try {
+                                const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+                                pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                                console.log(`\n=========================================\n🔢 CÓDIGO DE VINCULACIÓN EN LOGS: ${pairingCode}\n=========================================\n`);
+                            } catch (err) {
+                                console.error('❌ Error pidiendo código:', err.message);
+                                pairingRequested = false;
+                            }
+                        }, 5000); 
+                    }
+                } else {
+                    qrActual = await qrcode.toDataURL(qr);
+                    console.log("✅ QR generado (puedes verlo en la URL web).");
                 }
-            } else {
-                qrActual = await qrcode.toDataURL(qr);
-                console.log("✅ QR generado en la web.");
             }
-        }
 
-        if (connection === 'close') {
-            const statusCode = lastDisconnect.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            estaConectado = false;
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                estaConectado = false;
 
-            if (statusCode === 405 || statusCode === 401 || !shouldReconnect) {
-                console.log('⚠️ Sesión rota o desvinculada. Limpiando Supabase...');
-                qrActual = ''; pairingCode = null; pairingRequested = false;
-                await supabase.from('whatsapp_sessions').delete().like('id', 'referi-%');
-                setTimeout(connectToWhatsApp, 3000);
-            } else {
-                console.log(`❌ Conexión interrumpida (Código: ${statusCode}). Reconectando...`);
-                setTimeout(connectToWhatsApp, 5000);
+                console.log(`⚠️ Conexión cerrada. Código de desconexión: ${statusCode}`);
+
+                // 401: Unauthorized, 405: Not Allowed (suele pasar si WhatsApp rechaza la sesión)
+                if (statusCode === 405 || statusCode === 401 || !shouldReconnect) {
+                    console.log('🧹 Sesión rota o rechazada por WhatsApp. Limpiando DB para intentar desde cero...');
+                    qrActual = ''; pairingCode = null; pairingRequested = false;
+                    try {
+                        await supabase.from('whatsapp_sessions').delete().like('id', 'referi-%');
+                    } catch(e) {
+                        console.error('❌ Error limpiando DB tras desconexión:', e.message);
+                    }
+                    setTimeout(connectToWhatsApp, 5000); // Dar 5 segundos de margen
+                } else {
+                    console.log(`🔄 Reconectando de forma normal...`);
+                    setTimeout(connectToWhatsApp, 5000);
+                }
+            } else if (connection === 'open') {
+                estaConectado = true; qrActual = ''; pairingCode = null; pairingRequested = false;
+                console.log('✅ BOT REFERI MILLOBET CONECTADO EXITOSAMENTE A WHATSAPP');
+                iniciarCronJobs(sock);
             }
-        } else if (connection === 'open') {
-            estaConectado = true; qrActual = ''; pairingCode = null;
-            console.log('✅ BOT REFERI MILLOBET CONECTADO EXITOSAMENTE');
-            iniciarCronJobs(sock);
-        }
-    });
+        });
 
-    // Procesamiento de comandos
-    sock.ev.on('messages.upsert', async (m) => {
-        if (m.type !== 'notify') return;
-        const msg = m.messages[0];
-        if (!msg.message) return;
+        sock.ev.on('messages.upsert', async (m) => {
+            if (m.type !== 'notify') return;
+            const msg = m.messages[0];
+            if (!msg.message) return;
 
-        const remoteJid = msg.key.remoteJid;
-        const isFromMe = msg.key.fromMe;
-        const isGroup = remoteJid.endsWith('@g.us');
-        const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "";
+            const remoteJid = msg.key.remoteJid;
+            const isFromMe = msg.key.fromMe;
+            const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
 
-        if (isFromMe && textMessage.startsWith('!ping')) {
-            await sock.sendMessage(remoteJid, { text: '✅ Pong! Bot funcionando con Baileys + Supabase.' });
-        }
-    });
+            if (isFromMe && textMessage.startsWith('!ping')) {
+                await sock.sendMessage(remoteJid, { text: '✅ Pong! Bot funcionando correctamente.' });
+            }
+        });
+    } catch (e) {
+        console.error("❌ Error fatal en connectToWhatsApp:", e);
+    }
 }
 
 // ============================================================================
@@ -192,7 +235,7 @@ async function connectToWhatsApp() {
 // ============================================================================
 app.get('/', (req, res) => {
     if (estaConectado) {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1 style="color:green;">✅ REFERI MILLOBET EN LÍNEA</h1><p>Conectado a WhatsApp con Baileys y respaldado en Supabase.</p></div>');
+        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1 style="color:green;">✅ REFERI MILLOBET EN LÍNEA</h1><p>Conectado y respaldado en Supabase.</p></div>');
     } else if (qrActual && !BOT_PHONE_NUMBER) {
         res.send(`
             <div style="font-family:sans-serif;text-align:center;margin-top:50px;">
@@ -202,11 +245,11 @@ app.get('/', (req, res) => {
             </div>
         `);
     } else {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ El bot está arrancando...</h1><p><b>Por favor, mira los Logs de Render para ver tu código de vinculación.</b></p><script>setTimeout(()=>location.reload(),5000);</script></div>');
+        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ El bot está arrancando / Desconectado...</h1><p><b>Revisa los logs de Render para ver tu código de vinculación o detectar errores.</b></p><script>setTimeout(()=>location.reload(),5000);</script></div>');
     }
 });
 
 app.listen(PORT, () => {
-    console.log(`🌐 Servidor web en puerto ${PORT}`);
+    console.log(`🌐 Servidor web iniciado en el puerto ${PORT}`);
     connectToWhatsApp();
 });
