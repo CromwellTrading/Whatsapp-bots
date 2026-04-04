@@ -1,24 +1,21 @@
-FROM node:18-slim
+FROM node:18-alpine
 
-# Instalar dependencias del sistema necesarias para Baileys (sin puppeteer)
-RUN apt-get update && apt-get install -y \
-    git \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Instalar git (necesario para algunas dependencias de Baileys)
+RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Copiar package.json y package-lock.json (si existe)
+# Copiar archivos de definición de paquetes
 COPY package*.json ./
 
-# Instalar solo dependencias de producción
-RUN npm ci --only=production
+# Instalar dependencias (no necesita package-lock.json)
+RUN npm install
 
-# Copiar el resto del código
+# Copiar el resto del código fuente
 COPY . .
 
-# Exponer el puerto que usará Express
+# Puerto que usará Express para mostrar QR/código
 EXPOSE 3000
 
-# Comando para iniciar el bot
+# Comando de inicio
 CMD ["npm", "start"]
