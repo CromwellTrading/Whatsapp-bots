@@ -1,265 +1,216 @@
 require('dotenv').config();
-const { default: makeWASocket, DisconnectReason, Browsers, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
+const makeWASocket = require('@whiskeysockets/baileys').default;
+const { DisconnectReason, Browsers, BufferJSON, initAuthCreds, proto } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
-const cron = require('node-cron');
-const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
 
-// ============================================================================
-// 1. CONFIGURACIÓN DEL ENTORNO Y SUPABASE
-// ============================================================================
+// =======================
+// CONFIG
+// =======================
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ZONA_HORARIA = process.env.TZ || "America/Havana";
-const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || null;
-const MEDIA_DIR = './media';
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-
-if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
-
-let db = null;
-const saveDB = async () => {
-    try {
-        await supabase.from('bot_settings').update({ data: db }).eq('id', 'default_config');
-    } catch (err) {
-        console.error('❌ Error guardando configuración en DB:', err.message);
-    }
-};
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_KEY
+);
 
 let qrActual = '';
-let pairingCode = null;
-let estaConectado = false;
-let scheduledJobs = {};
-let pairingRequested = false;
+let conectado = false;
 
-// ============================================================================
-// 2. ADAPTADOR DE SESIÓN DE BAILEYS PARA SUPABASE
-// ============================================================================
-async function useSupabaseAuthState(sessionName) {
-    const writeData = async (data, id) => {
-        try {
-            const json = JSON.stringify(data, BufferJSON.replacer);
-            const { error } = await supabase.from('whatsapp_sessions').upsert({ id: `${sessionName}-${id}`, session_data: json });
-            if (error) {
-                console.error(`❌ Supabase rechazó escribir [${id}]:`, error.message);
-            }
-        } catch (err) {
-            console.error(`❌ Error fatal escribiendo [${id}]:`, err.message);
-        }
+// =======================
+// SUPABASE AUTH (BIEN HECHO)
+// =======================
+function useSupabaseAuthState(sessionName = 'session') {
+
+    const writeData = async (id, value) => {
+        const { error } = await supabase
+            .from('whatsapp_sessions')
+            .upsert({
+                id: `${sessionName}-${id}`,
+                session_data: JSON.stringify(value, BufferJSON.replacer)
+            });
+
+        if (error) console.error('❌ Error guardando:', error.message);
     };
 
     const readData = async (id) => {
-        try {
-            const { data, error } = await supabase.from('whatsapp_sessions').select('session_data').eq('id', `${sessionName}-${id}`).maybeSingle();
-            if (error) console.error(`❌ Supabase rechazó leer [${id}]:`, error.message);
-            if (data) return JSON.parse(data.session_data, BufferJSON.reviver);
-            return null;
-        } catch (err) {
-            console.error(`❌ Error fatal leyendo [${id}]:`, err.message);
+        const { data, error } = await supabase
+            .from('whatsapp_sessions')
+            .select('session_data')
+            .eq('id', `${sessionName}-${id}`)
+            .maybeSingle();
+
+        if (error) {
+            console.error('❌ Error leyendo:', error.message);
             return null;
         }
+
+        return data ? JSON.parse(data.session_data, BufferJSON.reviver) : null;
     };
 
     const removeData = async (id) => {
-        try {
-            const { error } = await supabase.from('whatsapp_sessions').delete().eq('id', `${sessionName}-${id}`);
-            if (error) console.error(`❌ Supabase rechazó borrar [${id}]:`, error.message);
-        } catch (err) {
-            console.error(`❌ Error fatal borrando [${id}]:`, err.message);
-        }
+        await supabase
+            .from('whatsapp_sessions')
+            .delete()
+            .eq('id', `${sessionName}-${id}`);
     };
-
-    const creds = await readData('creds') || initAuthCreds();
 
     return {
         state: {
-            creds,
+            creds: initAuthCreds(),
+
             keys: {
                 get: async (type, ids) => {
                     const data = {};
-                    await Promise.all(ids.map(async (id) => {
+
+                    for (const id of ids) {
                         let value = await readData(`${type}-${id}`);
+
                         if (type === 'app-state-sync-key' && value) {
-                            value = require('@whiskeysockets/baileys').proto.Message.AppStateSyncKeyData.fromObject(value);
+                            try {
+                                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                            } catch {
+                                value = null;
+                            }
                         }
+
                         data[id] = value;
-                    }));
+                    }
+
                     return data;
                 },
+
                 set: async (data) => {
-                    const tasks = [];
-                    for (const category of Object.keys(data)) {
-                        for (const id of Object.keys(data[category])) {
+                    for (const category in data) {
+                        for (const id in data[category]) {
                             const value = data[category][id];
                             const key = `${category}-${id}`;
-                            if (value) tasks.push(writeData(value, key));
-                            else tasks.push(removeData(key));
+
+                            if (value) {
+                                await writeData(key, value);
+                            } else {
+                                await removeData(key);
+                            }
                         }
                     }
-                    await Promise.all(tasks);
                 }
             }
         },
-        saveCreds: () => writeData(creds, 'creds')
+
+        saveCreds: async (creds) => {
+            console.log('💾 Guardando sesión...');
+            await writeData('creds', creds);
+        }
     };
 }
 
-// ============================================================================
-// 3. MOTOR DE TAREAS
-// ============================================================================
-function iniciarCronJobs(sock) {
-    Object.values(scheduledJobs).forEach(job => job.stop());
-    scheduledJobs = {};
-    if (!db || !db.tasks) return;
+// =======================
+// WHATSAPP
+// =======================
+async function startBot() {
 
-    db.tasks.forEach((task, index) => {
-        if (!task.enabled) return;
-        scheduledJobs[index] = cron.schedule(task.cronTime, async () => {
-            try {
-                let content = {};
-                if (task.mediaPath && fs.existsSync(task.mediaPath)) content = { image: fs.readFileSync(task.mediaPath), caption: task.message };
-                else content = { text: task.message };
-                if (task.targetId === 'status@broadcast') await sock.sendMessage('status@broadcast', content, { statusJidList: [sock.user.id] });
-                else await sock.sendMessage(task.targetId, content);
-            } catch(e) { console.error('Error en tarea programada:', e); }
-        }, { timezone: ZONA_HORARIA });
+    const { state, saveCreds } = useSupabaseAuthState('referi');
+
+    const savedCreds = await (async () => {
+        const { data } = await supabase
+            .from('whatsapp_sessions')
+            .select('session_data')
+            .eq('id', 'referi-creds')
+            .maybeSingle();
+
+        return data ? JSON.parse(data.session_data, BufferJSON.reviver) : null;
+    })();
+
+    if (savedCreds) {
+        state.creds = savedCreds;
+        console.log('🔑 Sesión cargada desde Supabase');
+    } else {
+        console.log('🆕 Nueva sesión');
+    }
+
+    const sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        browser: Browsers.ubuntu('Chrome'),
+        printQRInTerminal: false,
+        keepAliveIntervalMs: 30000,
+        markOnlineOnConnect: true
     });
-    cron.schedule('0 12 * * *', () => { db.autoReply.repliedToday = []; saveDB(); }, { timezone: ZONA_HORARIA });
-}
 
-// ============================================================================
-// 4. INICIO DEL BOT (BAILEYS)
-// ============================================================================
-async function connectToWhatsApp() {
-    try {
-        const { data: configData, error } = await supabase.from('bot_settings').select('data').eq('id', 'default_config').maybeSingle();
-        
-        if (error) console.error("⚠️ Error leyendo bot_settings de Supabase:", error.message);
-        
-        if (!configData) {
-            console.log("⚠️ Creando configuración por defecto en memoria.");
-            db = { autoReply: { active: false, text: "Offline.", startHour: 23, endHour: 8, repliedToday: [] }, tasks: [], logGroups: false };
-        } else {
-            db = configData.data;
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            qrActual = await qrcode.toDataURL(qr);
+            console.log('📱 QR generado');
         }
 
-        const { state, saveCreds } = await useSupabaseAuthState('referi');
+        if (connection === 'open') {
+            conectado = true;
+            qrActual = '';
+            console.log('✅ CONECTADO A WHATSAPP');
+        }
 
-        const sock = makeWASocket({
-            auth: state,
-            logger: pino({ level: 'silent' }),
-            browser: Browsers.macOS('Desktop'),
-            printQRInTerminal: false,
-            syncFullHistory: false
-        });
+        if (connection === 'close') {
+            const code = lastDisconnect?.error?.output?.statusCode;
+            console.log('⚠️ Desconectado:', code);
 
-        sock.ev.on('creds.update', saveCreds);
+            if (code === DisconnectReason.loggedOut) {
+                console.log('🧹 Sesión eliminada');
 
-        sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr } = update;
-
-            if (qr && !state.creds.registered) {
-                if (BOT_PHONE_NUMBER) {
-                    if (!pairingRequested) {
-                        pairingRequested = true;
-                        // Aumentamos a 10 segundos para dar tiempo a que la conexión sea estable antes de pedir el código
-                        console.log(`⏳ Generando código para +${BOT_PHONE_NUMBER} (esperando 10s para asegurar conexión)...`);
-                        setTimeout(async () => {
-                            try {
-                                const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
-                                pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-                                console.log(`\n=========================================\n🔢 CÓDIGO DE VINCULACIÓN: ${pairingCode}\nTIENES TIEMPO, INTRODÚCELO CON CALMA.\n=========================================\n`);
-                            } catch (err) {
-                                console.error('❌ Error pidiendo código:', err.message);
-                                pairingRequested = false;
-                            }
-                        }, 10000); 
-                    }
-                } else {
-                    qrActual = await qrcode.toDataURL(qr);
-                    console.log("✅ QR generado (puedes verlo en la URL web).");
-                }
+                await supabase
+                    .from('whatsapp_sessions')
+                    .delete()
+                    .like('id', 'referi-%');
             }
 
-            if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                estaConectado = false;
+            console.log('🔄 Reintentando en 10s...');
+            setTimeout(startBot, 10000);
+        }
+    });
 
-                console.log(`⚠️ Conexión cerrada. Código de error: ${statusCode}`);
+    sock.ev.on('messages.upsert', async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message) return;
 
-                if (statusCode === 401) {
-                    // 401: Sesión desvinculada desde el móvil. AQUÍ SÍ BORRAMOS.
-                    console.log('🧹 Sesión desvinculada (401). Limpiando DB...');
-                    qrActual = ''; pairingCode = null; pairingRequested = false;
-                    try { await supabase.from('whatsapp_sessions').delete().like('id', 'referi-%'); } catch(e){}
-                    // Esperamos 15 segundos antes de reiniciar de cero
-                    setTimeout(connectToWhatsApp, 15000);
+        const from = msg.key.remoteJid;
+        const text = msg.message.conversation || '';
 
-                } else if (statusCode === 405) {
-                    // 405: Rate Limit de WhatsApp. NO BORRAR LA BD. Solo esperar pacientemente.
-                    console.log('⏳ Error 405: WhatsApp bloqueó temporalmente la IP por pedir muchos códigos.');
-                    console.log('🛑 El bot dormirá durante 5 MINUTOS para que WhatsApp se calme...');
-                    pairingRequested = false;
-                    setTimeout(connectToWhatsApp, 300000); // 5 minutos exactos
-
-                } else if (shouldReconnect) {
-                    // Otro error común (desconexión de internet, reinicio de Baileys, etc.)
-                    // Aumentamos a 20 segundos para evitar spam y darte tiempo de escribir si te dio código
-                    console.log(`🔄 Reconectando en 20 segundos...`);
-                    pairingRequested = false;
-                    setTimeout(connectToWhatsApp, 20000);
-                } else {
-                    console.log('❌ Bot desconectado permanentemente.');
-                }
-            } else if (connection === 'open') {
-                estaConectado = true; qrActual = ''; pairingCode = null; pairingRequested = false;
-                console.log('✅ BOT REFERI MILLOBET CONECTADO EXITOSAMENTE A WHATSAPP');
-                iniciarCronJobs(sock);
+        if (text === '!ping') {
+            try {
+                await sock.sendMessage(from, { text: 'pong 🧠' });
+            } catch (e) {
+                console.error('❌ Error enviando mensaje:', e);
             }
-        });
-
-        sock.ev.on('messages.upsert', async (m) => {
-            if (m.type !== 'notify') return;
-            const msg = m.messages[0];
-            if (!msg.message) return;
-
-            const remoteJid = msg.key.remoteJid;
-            const isFromMe = msg.key.fromMe;
-            const textMessage = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-
-            if (isFromMe && textMessage.startsWith('!ping')) {
-                await sock.sendMessage(remoteJid, { text: '✅ Pong! Bot funcionando correctamente.' });
-            }
-        });
-    } catch (e) {
-        console.error("❌ Error fatal en connectToWhatsApp:", e);
-    }
+        }
+    });
 }
 
-// ============================================================================
-// 5. SERVIDOR WEB
-// ============================================================================
+// =======================
+// WEB
+// =======================
 app.get('/', (req, res) => {
-    if (estaConectado) {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1 style="color:green;">✅ REFERI MILLOBET EN LÍNEA</h1><p>Conectado y respaldado en Supabase.</p></div>');
-    } else if (qrActual && !BOT_PHONE_NUMBER) {
-        res.send(`
-            <div style="font-family:sans-serif;text-align:center;margin-top:50px;">
-                <h1>📱 Escanea el código QR</h1>
-                <img src="${qrActual}" style="width:300px;border:1px solid #ccc;padding:10px;border-radius:10px;">
-                <script>setTimeout(() => location.reload(), 5000);</script>
-            </div>
-        `);
-    } else {
-        res.send('<div style="font-family:sans-serif;text-align:center;margin-top:50px;"><h1>⏳ El bot está arrancando / Desconectado...</h1><p><b>Revisa los logs de Render para ver tu código de vinculación o detectar errores.</b></p><script>setTimeout(()=>location.reload(),5000);</script></div>');
+    if (conectado) {
+        return res.send('✅ Bot conectado');
     }
+
+    if (qrActual) {
+        return res.send(`
+            <h2>Escanea el QR</h2>
+            <img src="${qrActual}" width="300"/>
+            <script>setTimeout(()=>location.reload(),5000)</script>
+        `);
+    }
+
+    res.send('⏳ Esperando conexión...');
 });
 
 app.listen(PORT, () => {
-    console.log(`🌐 Servidor web iniciado en el puerto ${PORT}`);
-    connectToWhatsApp();
+    console.log('🌐 Servidor en puerto', PORT);
+    startBot();
 });
