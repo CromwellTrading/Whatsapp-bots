@@ -36,7 +36,7 @@ let scheduledJobs = {};
 let pairingRequested = false;
 
 // ============================================================================
-// 2. ADAPTADOR DE SESIÓN DE BAILEYS PARA SUPABASE MEJORADO
+// 2. ADAPTADOR DE SESIÓN DE BAILEYS PARA SUPABASE
 // ============================================================================
 async function useSupabaseAuthState(sessionName) {
     const writeData = async (data, id) => {
@@ -83,7 +83,6 @@ async function useSupabaseAuthState(sessionName) {
                     await Promise.all(ids.map(async (id) => {
                         let value = await readData(`${type}-${id}`);
                         if (type === 'app-state-sync-key' && value) {
-                            // Carga correcta de las llaves usando prototipos de Baileys
                             value = require('@whiskeysockets/baileys').proto.Message.AppStateSyncKeyData.fromObject(value);
                         }
                         data[id] = value;
@@ -151,7 +150,7 @@ async function connectToWhatsApp() {
 
         const sock = makeWASocket({
             auth: state,
-            logger: pino({ level: 'silent' }), // Puedes cambiar 'silent' a 'info' temporalmente si quieres ver todo el log de Baileys
+            logger: pino({ level: 'silent' }),
             browser: Browsers.macOS('Desktop'),
             printQRInTerminal: false,
             syncFullHistory: false
@@ -166,17 +165,18 @@ async function connectToWhatsApp() {
                 if (BOT_PHONE_NUMBER) {
                     if (!pairingRequested) {
                         pairingRequested = true;
-                        console.log(`⏳ Generando código para +${BOT_PHONE_NUMBER} (esperando 5s para evitar bloqueos)...`);
+                        // Aumentamos a 10 segundos para dar tiempo a que la conexión sea estable antes de pedir el código
+                        console.log(`⏳ Generando código para +${BOT_PHONE_NUMBER} (esperando 10s para asegurar conexión)...`);
                         setTimeout(async () => {
                             try {
                                 const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
                                 pairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-                                console.log(`\n=========================================\n🔢 CÓDIGO DE VINCULACIÓN EN LOGS: ${pairingCode}\n=========================================\n`);
+                                console.log(`\n=========================================\n🔢 CÓDIGO DE VINCULACIÓN: ${pairingCode}\nTIENES TIEMPO, INTRODÚCELO CON CALMA.\n=========================================\n`);
                             } catch (err) {
                                 console.error('❌ Error pidiendo código:', err.message);
                                 pairingRequested = false;
                             }
-                        }, 5000); 
+                        }, 10000); 
                     }
                 } else {
                     qrActual = await qrcode.toDataURL(qr);
@@ -189,21 +189,31 @@ async function connectToWhatsApp() {
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 estaConectado = false;
 
-                console.log(`⚠️ Conexión cerrada. Código de desconexión: ${statusCode}`);
+                console.log(`⚠️ Conexión cerrada. Código de error: ${statusCode}`);
 
-                // 401: Unauthorized, 405: Not Allowed (suele pasar si WhatsApp rechaza la sesión)
-                if (statusCode === 405 || statusCode === 401 || !shouldReconnect) {
-                    console.log('🧹 Sesión rota o rechazada por WhatsApp. Limpiando DB para intentar desde cero...');
+                if (statusCode === 401) {
+                    // 401: Sesión desvinculada desde el móvil. AQUÍ SÍ BORRAMOS.
+                    console.log('🧹 Sesión desvinculada (401). Limpiando DB...');
                     qrActual = ''; pairingCode = null; pairingRequested = false;
-                    try {
-                        await supabase.from('whatsapp_sessions').delete().like('id', 'referi-%');
-                    } catch(e) {
-                        console.error('❌ Error limpiando DB tras desconexión:', e.message);
-                    }
-                    setTimeout(connectToWhatsApp, 5000); // Dar 5 segundos de margen
+                    try { await supabase.from('whatsapp_sessions').delete().like('id', 'referi-%'); } catch(e){}
+                    // Esperamos 15 segundos antes de reiniciar de cero
+                    setTimeout(connectToWhatsApp, 15000);
+
+                } else if (statusCode === 405) {
+                    // 405: Rate Limit de WhatsApp. NO BORRAR LA BD. Solo esperar pacientemente.
+                    console.log('⏳ Error 405: WhatsApp bloqueó temporalmente la IP por pedir muchos códigos.');
+                    console.log('🛑 El bot dormirá durante 5 MINUTOS para que WhatsApp se calme...');
+                    pairingRequested = false;
+                    setTimeout(connectToWhatsApp, 300000); // 5 minutos exactos
+
+                } else if (shouldReconnect) {
+                    // Otro error común (desconexión de internet, reinicio de Baileys, etc.)
+                    // Aumentamos a 20 segundos para evitar spam y darte tiempo de escribir si te dio código
+                    console.log(`🔄 Reconectando en 20 segundos...`);
+                    pairingRequested = false;
+                    setTimeout(connectToWhatsApp, 20000);
                 } else {
-                    console.log(`🔄 Reconectando de forma normal...`);
-                    setTimeout(connectToWhatsApp, 5000);
+                    console.log('❌ Bot desconectado permanentemente.');
                 }
             } else if (connection === 'open') {
                 estaConectado = true; qrActual = ''; pairingCode = null; pairingRequested = false;
