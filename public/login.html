@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Login - WhatsApp Bot SaaS</title>
+  <style>
+    body { font-family: Arial; max-width: 400px; margin: 50px auto; }
+    input { width: 100%; padding: 10px; margin: 5px 0; }
+    button { padding: 10px 20px; }
+    .tab { display: flex; }
+    .tab button { flex:1; }
+  </style>
+</head>
+<body>
+  <h1>WhatsApp Bot SaaS</h1>
+  <div class="tab">
+    <button id="loginTab">Iniciar Sesión</button>
+    <button id="registerTab">Registrarse</button>
+  </div>
+  
+  <form id="loginForm">
+    <h2>Login</h2>
+    <input type="email" id="loginEmail" placeholder="Email" required>
+    <input type="password" id="loginPassword" placeholder="Contraseña" required>
+    <button type="submit">Entrar</button>
+  </form>
+  
+  <form id="registerForm" style="display:none;">
+    <h2>Registro</h2>
+    <input type="text" id="regFullName" placeholder="Nombre completo" required>
+    <input type="tel" id="regPhone" placeholder="Número (ej: 5359190241)" required>
+    <input type="email" id="regEmail" placeholder="Email" required>
+    <input type="password" id="regPassword" placeholder="Contraseña" required>
+    <button type="submit">Registrarse</button>
+  </form>
+
+  <script>
+    const SUPABASE_URL = 'TU_SUPABASE_URL';
+    const SUPABASE_ANON_KEY = 'TU_ANON_KEY';
+    
+    // Importar Supabase desde CDN
+    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    
+    document.getElementById('loginTab').onclick = () => {
+      document.getElementById('loginForm').style.display = 'block';
+      document.getElementById('registerForm').style.display = 'none';
+    };
+    document.getElementById('registerTab').onclick = () => {
+      document.getElementById('loginForm').style.display = 'none';
+      document.getElementById('registerForm').style.display = 'block';
+    };
+    
+    document.getElementById('loginForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('loginEmail').value;
+      const password = document.getElementById('loginPassword').value;
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) return alert(error.message);
+      
+      localStorage.setItem('sb-token', data.session.access_token);
+      // Redirigir según rol
+      const profile = await supabase.from('profiles').select('is_admin').eq('id', data.user.id).single();
+      if (profile.data?.is_admin) {
+        window.location.href = '/admin.html';
+      } else {
+        window.location.href = '/user.html';
+      }
+    };
+    
+    document.getElementById('registerForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const fullName = document.getElementById('regFullName').value;
+      const phone = document.getElementById('regPhone').value;
+      const email = document.getElementById('regEmail').value;
+      const password = document.getElementById('regPassword').value;
+      
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: fullName, phone_number: phone }
+        }
+      });
+      if (error) return alert(error.message);
+      alert('Registro exitoso. Ya puedes iniciar sesión.');
+      document.getElementById('loginTab').click();
+    };
+  </script>
+</body>
+</html>
