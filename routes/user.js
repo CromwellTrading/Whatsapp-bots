@@ -5,20 +5,52 @@ const { supabase, supabaseAdmin } = require('../auth/supabase');
 const { getUserStatus, startUserInstance } = require('../core/manager');
 const { getSettings, saveSettings } = require('../utils/db');
 
-// Middleware de autenticación
-async function authMiddleware(req, res, next) {
+// -------------------- MIDDLEWARES --------------------
+async function authAndApprovalMiddleware(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'No autorizado' });
   
   const { data: { user }, error } = await supabase.auth.getUser(token);
   if (error) return res.status(401).json({ error: 'Token inválido' });
   
+  const { data: profile, error: profileError } = await supabase
+    .from('profiles')
+    .select('is_approved, phone_number, is_admin')
+    .eq('id', user.id)
+    .single();
+  
+  if (profileError || !profile) {
+    return res.status(401).json({ error: 'Perfil no encontrado' });
+  }
+  
   req.user = user;
+  req.profile = profile;
+  
+  if (req.requiresApproval && !profile.is_approved) {
+    return res.status(403).json({ error: 'Cuenta pendiente de aprobación por el administrador' });
+  }
+  
   next();
 }
 
-// Obtener estado del bot del usuario
-router.get('/status', authMiddleware, async (req, res) => {
+function requiresApproval(req, res, next) {
+  req.requiresApproval = true;
+  next();
+}
+
+// -------------------- RUTAS --------------------
+
+// Estado de aprobación (accesible siempre)
+router.get('/approval-status', authAndApprovalMiddleware, (req, res) => {
+  res.json({
+    is_approved: req.profile.is_approved,
+    phone_number: req.profile.phone_number,
+    is_admin: req.profile.is_admin
+  });
+});
+
+// A partir de aquí, todas las rutas requieren aprobación
+router.get('/status', authAndApprovalMiddleware, requiresApproval, async (req, res) => {
   const status = getUserStatus(req.user.id);
   if (!status) {
     return res.json({ connected: false, qrAvailable: false, message: 'Instancia no iniciada' });
@@ -31,8 +63,7 @@ router.get('/status', authMiddleware, async (req, res) => {
   });
 });
 
-// Obtener QR (imagen)
-router.get('/qr', authMiddleware, async (req, res) => {
+router.get('/qr', authAndApprovalMiddleware, requiresApproval, async (req, res) => {
   const status = getUserStatus(req.user.id);
   if (!status || !status.qr) {
     return res.status(404).send('QR no disponible');
@@ -42,8 +73,7 @@ router.get('/qr', authMiddleware, async (req, res) => {
   res.send(`<img src="${qrImage}" alt="QR Code" />`);
 });
 
-// Obtener código de 8 dígitos
-router.get('/pairing-code', authMiddleware, (req, res) => {
+router.get('/pairing-code', authAndApprovalMiddleware, requiresApproval, (req, res) => {
   const status = getUserStatus(req.user.id);
   if (!status || !status.pairingCode) {
     return res.status(404).json({ error: 'Código no disponible' });
@@ -51,14 +81,12 @@ router.get('/pairing-code', authMiddleware, (req, res) => {
   res.json({ code: status.pairingCode.match(/.{1,4}/g)?.join('-') || status.pairingCode });
 });
 
-// Obtener configuración
-router.get('/settings', authMiddleware, async (req, res) => {
+router.get('/settings', authAndApprovalMiddleware, requiresApproval, async (req, res) => {
   const settings = await getSettings(req.user.id);
   res.json(settings || { autoReply: { active: false }, tasks: [] });
 });
 
-// Guardar configuración
-router.post('/settings', authMiddleware, async (req, res) => {
+router.post('/settings', authAndApprovalMiddleware, requiresApproval, async (req, res) => {
   try {
     await saveSettings(req.user.id, req.body);
     res.json({ success: true });
@@ -67,9 +95,8 @@ router.post('/settings', authMiddleware, async (req, res) => {
   }
 });
 
-// Subir imagen (para usar en tareas/auto-reply)
 const upload = multer({ storage: multer.memoryStorage() });
-router.post('/upload', authMiddleware, upload.single('image'), async (req, res) => {
+router.post('/upload', authAndApprovalMiddleware, requiresApproval, upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No se envió imagen' });
   
   const fileExt = req.file.originalname.split('.').pop();
@@ -84,7 +111,6 @@ router.post('/upload', authMiddleware, upload.single('image'), async (req, res) 
   
   if (error) return res.status(500).json({ error: error.message });
   
-  // Obtener URL pública
   const { data: { publicUrl } } = supabaseAdmin.storage
     .from('media')
     .getPublicUrl(fileName);
@@ -92,9 +118,8 @@ router.post('/upload', authMiddleware, upload.single('image'), async (req, res) 
   res.json({ url: publicUrl });
 });
 
-// Reiniciar instancia
-router.post('/restart', authMiddleware, async (req, res) => {
-  const { phone_number } = req.body; // Se puede obtener del perfil
+router.post('/restart', authAndApprovalMiddleware, requiresApproval, async (req, res) => {
+  const { phone_number } = req.profile;
   await startUserInstance(req.user.id, phone_number);
   res.json({ success: true });
 });
