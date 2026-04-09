@@ -8,19 +8,15 @@ const { createSupabaseAuthAdapter } = require('../auth/sessionAdapter');
 const { createUserBot } = require('./userBot');
 const { getSettings } = require('../utils/db');
 
-// Almacén global de instancias activas
-const instances = new Map(); // userId -> { sock, qr, pairingCode, isConnected, userData }
+const instances = new Map();
 
-/**
- * Inicia una instancia de WhatsApp para un usuario específico
- */
 async function startUserInstance(userId, phoneNumber) {
   console.log(`[User ${userId}] Iniciando instancia para ${phoneNumber}`);
-  
+
   const adapter = await createSupabaseAuthAdapter(userId);
   const { state, saveCreds } = adapter;
   const { version } = await fetchLatestBaileysVersion();
-  
+
   const sock = makeWASocket({
     version,
     logger: pino({ level: 'silent' }),
@@ -34,7 +30,6 @@ async function startUserInstance(userId, phoneNumber) {
     syncFullHistory: false,
   });
 
-  // Guardar en el mapa
   instances.set(userId, {
     sock,
     qr: null,
@@ -43,10 +38,8 @@ async function startUserInstance(userId, phoneNumber) {
     userData: { userId, phoneNumber }
   });
 
-  // Configurar los manejadores de eventos del usuario
   const userBot = createUserBot(userId, sock);
-  
-  // Eventos de conexión
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
     const instance = instances.get(userId);
@@ -63,8 +56,7 @@ async function startUserInstance(userId, phoneNumber) {
       instance.qr = null;
       instance.pairingCode = null;
       console.log(`[User ${userId}] Conectado a WhatsApp`);
-      
-      // Inicializar configuración por defecto si no existe
+
       const settings = await getSettings(userId);
       if (!settings) {
         const defaultSettings = {
@@ -78,10 +70,10 @@ async function startUserInstance(userId, phoneNumber) {
     if (connection === 'close') {
       const shouldReconnect = (lastDisconnect?.error instanceof Boom) &&
                               lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut;
-      
+
       console.log(`[User ${userId}] Conexión cerrada. Reconectar: ${shouldReconnect}`);
       instance.isConnected = false;
-      
+
       if (shouldReconnect) {
         await delay(10000);
         startUserInstance(userId, phoneNumber);
@@ -92,7 +84,6 @@ async function startUserInstance(userId, phoneNumber) {
       }
     }
 
-    // Solicitar código de 8 dígitos cuando está conectando y no hay QR
     if (connection === 'connecting' && !qr && phoneNumber) {
       try {
         await delay(5000);
@@ -106,8 +97,7 @@ async function startUserInstance(userId, phoneNumber) {
   });
 
   sock.ev.on('creds.update', saveCreds);
-  
-  // Pasar eventos de mensajes al userBot
+
   sock.ev.on('messages.upsert', async ({ messages }) => {
     await userBot.handleMessages(messages);
   });
@@ -115,31 +105,10 @@ async function startUserInstance(userId, phoneNumber) {
   return sock;
 }
 
-/**
- * Inicializa el gestor: levanta instancias para todos los usuarios APROBADOS
- */
 async function initManager() {
-  const { data: profiles, error } = await supabaseAdmin
-    .from('profiles')
-    .select('id, phone_number')
-    .eq('is_approved', true);
-
-  if (error) {
-    console.error('Error al cargar perfiles aprobados:', error);
-    return;
-  }
-
-  console.log(`👥 Cargando ${profiles.length} usuarios aprobados...`);
-  
-  for (const profile of profiles) {
-    await startUserInstance(profile.id, profile.phone_number);
-    await delay(2000);
-  }
+  console.log('👥 Manager inicializado. Las conexiones se establecerán bajo demanda.');
 }
 
-/**
- * Detiene la instancia de un usuario
- */
 async function stopUserInstance(userId) {
   const instance = instances.get(userId);
   if (instance) {
@@ -150,9 +119,6 @@ async function stopUserInstance(userId) {
   }
 }
 
-/**
- * Obtiene el estado de un usuario
- */
 function getUserStatus(userId) {
   const instance = instances.get(userId);
   if (!instance) return null;
@@ -164,9 +130,6 @@ function getUserStatus(userId) {
   };
 }
 
-/**
- * Obtiene todas las instancias (para admin)
- */
 function getAllInstances() {
   const result = [];
   for (const [userId, instance] of instances.entries()) {
@@ -180,16 +143,13 @@ function getAllInstances() {
   return result;
 }
 
-/**
- * Inicia la instancia de un usuario solo si está aprobado
- */
 async function startUserIfApproved(userId) {
   const { data: profile } = await supabaseAdmin
     .from('profiles')
     .select('phone_number, is_approved')
     .eq('id', userId)
     .single();
-  
+
   if (profile && profile.is_approved) {
     await stopUserInstance(userId);
     return startUserInstance(userId, profile.phone_number);
