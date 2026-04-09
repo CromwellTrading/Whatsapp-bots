@@ -2,7 +2,6 @@ const makeWASocket = require('@whiskeysockets/baileys').default;
 const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, delay } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
-const QRCode = require('qrcode');
 
 const { supabaseAdmin } = require('../auth/supabase');
 const { createSupabaseAuthAdapter } = require('../auth/sessionAdapter');
@@ -117,23 +116,22 @@ async function startUserInstance(userId, phoneNumber) {
 }
 
 /**
- * Inicializa el gestor: levanta instancias para todos los usuarios existentes
+ * Inicializa el gestor: levanta instancias para todos los usuarios APROBADOS
  */
 async function initManager() {
-  // Obtener todos los usuarios de la tabla profiles
   const { data: profiles, error } = await supabaseAdmin
     .from('profiles')
-    .select('id, phone_number');
-  
+    .select('id, phone_number')
+    .eq('is_approved', true);
+
   if (error) {
-    console.error('Error al cargar perfiles:', error);
+    console.error('Error al cargar perfiles aprobados:', error);
     return;
   }
 
-  console.log(`👥 Cargando ${profiles.length} usuarios...`);
+  console.log(`👥 Cargando ${profiles.length} usuarios aprobados...`);
   
   for (const profile of profiles) {
-    // Iniciar instancia (con un pequeño delay entre cada una para no saturar)
     await startUserInstance(profile.id, profile.phone_number);
     await delay(2000);
   }
@@ -182,11 +180,29 @@ function getAllInstances() {
   return result;
 }
 
+/**
+ * Inicia la instancia de un usuario solo si está aprobado
+ */
+async function startUserIfApproved(userId) {
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('phone_number, is_approved')
+    .eq('id', userId)
+    .single();
+  
+  if (profile && profile.is_approved) {
+    await stopUserInstance(userId);
+    return startUserInstance(userId, profile.phone_number);
+  }
+  return null;
+}
+
 module.exports = {
   startUserInstance,
   stopUserInstance,
   getUserStatus,
   getAllInstances,
   initManager,
+  startUserIfApproved,
   instances
 };
