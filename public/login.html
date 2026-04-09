@@ -3,51 +3,60 @@
 <head>
   <title>Login - WhatsApp Bot SaaS</title>
   <style>
-    body { font-family: Arial; max-width: 400px; margin: 50px auto; }
-    input { width: 100%; padding: 10px; margin: 5px 0; }
-    button { padding: 10px 20px; }
-    .tab { display: flex; }
-    .tab button { flex:1; }
+    body { font-family: Arial; max-width: 400px; margin: 50px auto; padding: 20px; }
+    input { width: 100%; padding: 12px; margin: 8px 0; box-sizing: border-box; }
+    button { padding: 12px 20px; width: 100%; margin: 5px 0; cursor: pointer; }
+    .tab { display: flex; margin-bottom: 20px; }
+    .tab button { flex:1; background: #f0f0f0; border: none; }
+    .tab button.active { background: #007bff; color: white; }
+    .form-container { border: 1px solid #ddd; padding: 20px; border-radius: 8px; }
   </style>
 </head>
 <body>
-  <h1>WhatsApp Bot SaaS</h1>
+  <h1 style="text-align:center;">🤖 WhatsApp Bot SaaS</h1>
   <div class="tab">
-    <button id="loginTab">Iniciar Sesión</button>
+    <button id="loginTab" class="active">Iniciar Sesión</button>
     <button id="registerTab">Registrarse</button>
   </div>
   
-  <form id="loginForm">
-    <h2>Login</h2>
-    <input type="email" id="loginEmail" placeholder="Email" required>
-    <input type="password" id="loginPassword" placeholder="Contraseña" required>
-    <button type="submit">Entrar</button>
-  </form>
-  
-  <form id="registerForm" style="display:none;">
-    <h2>Registro</h2>
-    <input type="text" id="regFullName" placeholder="Nombre completo" required>
-    <input type="tel" id="regPhone" placeholder="Número (ej: 5359190241)" required>
-    <input type="email" id="regEmail" placeholder="Email" required>
-    <input type="password" id="regPassword" placeholder="Contraseña" required>
-    <button type="submit">Registrarse</button>
-  </form>
-
-  <script>
-    const SUPABASE_URL = 'TU_SUPABASE_URL';
-    const SUPABASE_ANON_KEY = 'TU_ANON_KEY';
+  <div class="form-container">
+    <form id="loginForm">
+      <h2>Login</h2>
+      <input type="email" id="loginEmail" placeholder="Email" required>
+      <input type="password" id="loginPassword" placeholder="Contraseña" required>
+      <button type="submit">Entrar</button>
+    </form>
     
-    // Importar Supabase desde CDN
+    <form id="registerForm" style="display:none;">
+      <h2>Registro</h2>
+      <input type="text" id="regFullName" placeholder="Nombre completo" required>
+      <input type="tel" id="regPhone" placeholder="Número (ej: 5359190241)" required>
+      <input type="email" id="regEmail" placeholder="Email" required>
+      <input type="password" id="regPassword" placeholder="Contraseña (mín 6 caracteres)" required>
+      <button type="submit">Registrarse</button>
+    </form>
+  </div>
+
+  <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+    
+    // ⚠️ REEMPLAZA CON TUS DATOS REALES DE SUPABASE
+    const SUPABASE_URL = 'https://tu-proyecto.supabase.co';
+    const SUPABASE_ANON_KEY = 'tu-anon-key';
+    
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     
     document.getElementById('loginTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'block';
       document.getElementById('registerForm').style.display = 'none';
+      document.getElementById('loginTab').classList.add('active');
+      document.getElementById('registerTab').classList.remove('active');
     };
     document.getElementById('registerTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'none';
       document.getElementById('registerForm').style.display = 'block';
+      document.getElementById('registerTab').classList.add('active');
+      document.getElementById('loginTab').classList.remove('active');
     };
     
     document.getElementById('loginForm').onsubmit = async (e) => {
@@ -55,12 +64,13 @@
       const email = document.getElementById('loginEmail').value;
       const password = document.getElementById('loginPassword').value;
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) return alert(error.message);
+      if (error) return alert('Error: ' + error.message);
       
       localStorage.setItem('sb-token', data.session.access_token);
+      
       // Redirigir según rol
-      const profile = await supabase.from('profiles').select('is_admin').eq('id', data.user.id).single();
-      if (profile.data?.is_admin) {
+      const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', data.user.id).single();
+      if (profile?.is_admin) {
         window.location.href = '/admin.html';
       } else {
         window.location.href = '/user.html';
@@ -70,9 +80,11 @@
     document.getElementById('registerForm').onsubmit = async (e) => {
       e.preventDefault();
       const fullName = document.getElementById('regFullName').value;
-      const phone = document.getElementById('regPhone').value;
+      const phone = document.getElementById('regPhone').value.replace(/\D/g, '');
       const email = document.getElementById('regEmail').value;
       const password = document.getElementById('regPassword').value;
+      
+      if (phone.length < 7) return alert('Número de teléfono inválido');
       
       const { data, error } = await supabase.auth.signUp({
         email,
@@ -81,10 +93,20 @@
           data: { full_name: fullName, phone_number: phone }
         }
       });
-      if (error) return alert(error.message);
-      alert('Registro exitoso. Ya puedes iniciar sesión.');
+      if (error) return alert('Error: ' + error.message);
+      
+      alert('✅ Registro exitoso. Tu cuenta está pendiente de aprobación por el administrador.');
       document.getElementById('loginTab').click();
     };
+    
+    // Si ya hay sesión, redirigir
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', session.user.id).single();
+        window.location.href = profile?.is_admin ? '/admin.html' : '/user.html';
+      }
+    })();
   </script>
 </body>
 </html>
