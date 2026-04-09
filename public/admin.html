@@ -3,30 +3,42 @@
 <head>
   <title>Admin - WhatsApp Bot SaaS</title>
   <style>
-    body { font-family: Arial; max-width: 1000px; margin: 20px auto; }
+    body { font-family: Arial; max-width: 1200px; margin: 20px auto; padding: 0 20px; }
     table { width: 100%; border-collapse: collapse; margin-top: 20px; }
     th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
     th { background-color: #f2f2f2; }
-    .connected { color: green; }
+    .connected { color: green; font-weight: bold; }
     .disconnected { color: red; }
+    button { margin: 2px; padding: 5px 10px; cursor: pointer; }
+    #logout { float: right; padding: 8px 16px; }
   </style>
 </head>
 <body>
   <button id="logout">Cerrar Sesión</button>
-  <h1>Panel de Administración</h1>
+  <h1>🔧 Panel de Administración</h1>
   
-  <h2>Usuarios Registrados</h2>
+  <h2>👥 Usuarios Registrados</h2>
   <table id="usersTable">
     <thead>
-      <tr><th>Teléfono</th><th>Nombre</th><th>Admin</th><th>Estado</th><th>Acciones</th></tr>
+      <tr>
+        <th>Teléfono</th>
+        <th>Nombre</th>
+        <th>Admin</th>
+        <th>Aprobado</th>
+        <th>Estado WhatsApp</th>
+        <th>Acciones</th>
+      </tr>
     </thead>
     <tbody></tbody>
   </table>
 
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-    const SUPABASE_URL = 'TU_SUPABASE_URL';
-    const SUPABASE_ANON_KEY = 'TU_ANON_KEY';
+    
+    // ⚠️ REEMPLAZA CON TUS DATOS REALES DE SUPABASE
+    const SUPABASE_URL = 'https://tu-proyecto.supabase.co';
+    const SUPABASE_ANON_KEY = 'tu-anon-key';
+    
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     
     let token = localStorage.getItem('sb-token');
@@ -60,36 +72,49 @@
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>${u.phone_number}</td>
-          <td>${u.full_name || ''}</td>
-          <td>${u.is_admin ? 'Sí' : 'No'}</td>
-          <td class="${u.connected ? 'connected' : 'disconnected'}">${u.connected ? 'Conectado' : (u.hasQR ? 'Esperando QR' : 'Desconectado')}</td>
+          <td>${u.full_name || '-'}</td>
+          <td>${u.is_admin ? '✅ Sí' : '❌ No'}</td>
+          <td>${u.is_approved ? '✅ Aprobado' : '⏳ Pendiente'}</td>
+          <td class="${u.connected ? 'connected' : 'disconnected'}">
+            ${u.connected ? '🟢 Conectado' : (u.hasQR ? '🟡 Esperando QR' : '🔴 Desconectado')}
+          </td>
           <td>
-            <button onclick="restartUser('${u.id}')">Reiniciar</button>
-            <button onclick="deleteUser('${u.id}')">Eliminar</button>
+            ${!u.is_approved ? `<button onclick="approveUser('${u.id}')">✅ Aprobar</button>` : ''}
+            <button onclick="restartUser('${u.id}')">🔄 Reiniciar</button>
+            <button onclick="deleteUser('${u.id}')">🗑️ Eliminar</button>
           </td>
         `;
         tbody.appendChild(tr);
       });
     }
     
+    window.approveUser = async (userId) => {
+      if (!confirm('¿Aprobar este usuario? Se iniciará su instancia de WhatsApp.')) return;
+      await apiCall(`/users/${userId}/approve`, 'POST');
+      loadUsers();
+    };
+    
     window.restartUser = async (userId) => {
+      if (!confirm('¿Reiniciar la instancia de WhatsApp de este usuario?')) return;
       await apiCall(`/users/${userId}/restart`, 'POST');
       loadUsers();
     };
     
     window.deleteUser = async (userId) => {
-      if (!confirm('¿Eliminar usuario permanentemente?')) return;
+      if (!confirm('¿Eliminar usuario permanentemente? Esta acción no se puede deshacer.')) return;
       await apiCall(`/users/${userId}`, 'DELETE');
       loadUsers();
     };
     
-    document.getElementById('logout').onclick = () => {
+    function logout() {
       localStorage.removeItem('sb-token');
       window.location.href = '/login.html';
-    };
+    }
+    
+    document.getElementById('logout').onclick = logout;
     
     loadUsers();
-    setInterval(loadUsers, 30000);
+    setInterval(loadUsers, 30000); // Actualizar cada 30 segundos
   </script>
 </body>
 </html>
