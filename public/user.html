@@ -9,7 +9,6 @@
     #logout { float: right; }
     textarea { width: 100%; }
     .error { color: red; background: #f8d7da; padding: 10px; border-radius: 5px; }
-    .success { color: green; background: #d4edda; padding: 10px; border-radius: 5px; }
     #loading { text-align: center; padding: 50px; }
   </style>
 </head>
@@ -50,6 +49,7 @@
       const el = document.getElementById('errorMessage');
       el.textContent = '❌ ' + msg;
       el.style.display = 'block';
+      console.error(msg);
     }
 
     try {
@@ -72,16 +72,18 @@
       if (sessionError) throw new Error('Error al restaurar sesión: ' + sessionError.message);
 
       document.getElementById('loading').innerHTML = '👤 Cargando perfil...';
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) throw new Error('Sesión inválida');
+      
+      // Obtener perfil usando el nuevo endpoint (no depende de RLS)
+      const profileRes = await fetch('/api/user/profile', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!profileRes.ok) {
+        const err = await profileRes.json();
+        throw new Error(err.error || 'Error al obtener perfil');
+      }
+      const profile = await profileRes.json();
 
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('is_admin, phone_number, is_approved')
-        .eq('id', user.id)
-        .single();
-
-      if (profileError) throw new Error('Error al cargar perfil: ' + profileError.message);
+      console.log('Perfil cargado:', profile);
 
       if (profile.is_admin) {
         const adminLink = document.createElement('div');
@@ -212,7 +214,7 @@
       setInterval(loadStatus, 30000);
 
     } catch (error) {
-      document.getElementById('loading').innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+      document.getElementById('loading').innerHTML = `<div class="error">❌ ${error.message}</div>`;
       console.error(error);
     }
   </script>
