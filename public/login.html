@@ -10,6 +10,7 @@
     .tab button { flex:1; background: #f0f0f0; border: none; }
     .tab button.active { background: #007bff; color: white; }
     .form-container { border: 1px solid #ddd; padding: 20px; border-radius: 8px; }
+    .error { color: red; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -32,19 +33,26 @@
       <input type="text" id="regFullName" placeholder="Nombre completo" required>
       <input type="tel" id="regPhone" placeholder="Número (ej: 5359190241)" required>
       <input type="email" id="regEmail" placeholder="Email" required>
-      <input type="password" id="regPassword" placeholder="Contraseña (mín 6 caracteres)" required>
+      <input type="password" id="regPassword" placeholder="Contraseña (mín 6)" required>
       <button type="submit">Registrarse</button>
     </form>
+    <div id="errorMsg" class="error"></div>
   </div>
 
+  <script src="/config.js"></script>
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
     
-    // ⚠️ REEMPLAZA CON TUS DATOS REALES DE SUPABASE
-    const SUPABASE_URL = 'https://udvmarwjzvexzcumygmc.supabase.co';
-    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVkdm1hcndqenZleHpjdW15Z21jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyNjUyMDUsImV4cCI6MjA5MDg0MTIwNX0.3z-HNWHkdBXsE3nltNn4iEwZGwQYBB5Fk3M4JkcUFxs';
+    function showError(msg) {
+      document.getElementById('errorMsg').textContent = msg;
+    }
     
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
+      showError('Error de configuración. Contacte al administrador.');
+      throw new Error('Config missing');
+    }
+    
+    const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
     
     document.getElementById('loginTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'block';
@@ -61,45 +69,40 @@
     
     document.getElementById('loginForm').onsubmit = async (e) => {
       e.preventDefault();
+      showError('');
       const email = document.getElementById('loginEmail').value;
       const password = document.getElementById('loginPassword').value;
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) return alert('Error: ' + error.message);
+      if (error) return showError(error.message);
       
       localStorage.setItem('sb-token', data.session.access_token);
       
-      // Redirigir según rol
       const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', data.user.id).single();
-      if (profile?.is_admin) {
-        window.location.href = '/admin.html';
-      } else {
-        window.location.href = '/user.html';
-      }
+      window.location.href = profile?.is_admin ? '/admin.html' : '/user.html';
     };
     
     document.getElementById('registerForm').onsubmit = async (e) => {
       e.preventDefault();
+      showError('');
       const fullName = document.getElementById('regFullName').value;
       const phone = document.getElementById('regPhone').value.replace(/\D/g, '');
       const email = document.getElementById('regEmail').value;
       const password = document.getElementById('regPassword').value;
       
-      if (phone.length < 7) return alert('Número de teléfono inválido');
+      if (phone.length < 7) return showError('Número inválido');
       
-      const { data, error } = await supabase.auth.signUp({
+      const { error } = await supabase.auth.signUp({
         email,
         password,
-        options: {
-          data: { full_name: fullName, phone_number: phone }
-        }
+        options: { data: { full_name: fullName, phone_number: phone } }
       });
-      if (error) return alert('Error: ' + error.message);
+      if (error) return showError(error.message);
       
-      alert('✅ Registro exitoso. Tu cuenta está pendiente de aprobación por el administrador.');
+      alert('✅ Registro exitoso. Tu cuenta está pendiente de aprobación.');
       document.getElementById('loginTab').click();
     };
     
-    // Si ya hay sesión, redirigir
+    // Redirigir si ya hay sesión
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session) {
