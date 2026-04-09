@@ -12,6 +12,7 @@
     .tab button.active { background: #007bff; color: white; }
     .form-container { border: 1px solid #ddd; padding: 20px; border-radius: 8px; }
     .error { color: red; margin-top: 10px; }
+    .info { color: blue; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -38,37 +39,37 @@
       <button type="submit">Registrarse</button>
     </form>
     <div id="errorMsg" class="error"></div>
+    <div id="infoMsg" class="info"></div>
   </div>
 
   <script src="/config.js"></script>
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
     
+    const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+    
     function showError(msg) {
       document.getElementById('errorMsg').textContent = msg;
     }
-    
-    if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
-      showError('Error de configuración. Contacte al administrador.');
-      throw new Error('Config missing');
+    function showInfo(msg) {
+      document.getElementById('infoMsg').textContent = msg;
     }
     
-    const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-    
-    // Limpiar automáticamente token inválido al cargar
-    (async () => {
+    // Limpiar token inválido y mostrar mensaje
+    async function checkAndRedirect() {
       const token = localStorage.getItem('sb-token');
       if (!token) return;
+      
+      showInfo('Verificando sesión existente...');
       
       try {
         const { data: { user }, error } = await supabase.auth.getUser(token);
         if (error || !user) {
-          console.log('Token inválido, eliminando...');
+          showInfo('Sesión expirada. Por favor inicia sesión de nuevo.');
           localStorage.removeItem('sb-token');
           return;
         }
         
-        // Obtener perfil para decidir redirección
         const profileRes = await fetch('/api/user/profile', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -76,12 +77,17 @@
           const profile = await profileRes.json();
           window.location.href = profile.is_admin ? '/admin.html' : '/user.html';
         } else {
+          showInfo('No se pudo cargar el perfil. Inicia sesión nuevamente.');
           localStorage.removeItem('sb-token');
         }
       } catch (e) {
+        showInfo('Error de conexión. Inicia sesión manualmente.');
         localStorage.removeItem('sb-token');
       }
-    })();
+    }
+    
+    // Ejecutar verificación al cargar
+    checkAndRedirect();
     
     document.getElementById('loginTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'block';
@@ -89,6 +95,7 @@
       document.getElementById('loginTab').classList.add('active');
       document.getElementById('registerTab').classList.remove('active');
       document.getElementById('errorMsg').textContent = '';
+      document.getElementById('infoMsg').textContent = '';
     };
     document.getElementById('registerTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'none';
@@ -96,16 +103,22 @@
       document.getElementById('registerTab').classList.add('active');
       document.getElementById('loginTab').classList.remove('active');
       document.getElementById('errorMsg').textContent = '';
+      document.getElementById('infoMsg').textContent = '';
     };
     
     document.getElementById('loginForm').onsubmit = async (e) => {
       e.preventDefault();
       showError('');
+      showInfo('Iniciando sesión...');
       const email = document.getElementById('loginEmail').value;
       const password = document.getElementById('loginPassword').value;
       
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) return showError(error.message);
+      if (error) {
+        showError(error.message);
+        showInfo('');
+        return;
+      }
       
       localStorage.setItem('sb-token', data.session.access_token);
       
@@ -123,22 +136,32 @@
     document.getElementById('registerForm').onsubmit = async (e) => {
       e.preventDefault();
       showError('');
+      showInfo('Registrando...');
       const fullName = document.getElementById('regFullName').value;
       const phone = document.getElementById('regPhone').value.replace(/\D/g, '');
       const email = document.getElementById('regEmail').value;
       const password = document.getElementById('regPassword').value;
       
-      if (phone.length < 7) return showError('Número inválido');
+      if (phone.length < 7) {
+        showError('Número inválido');
+        showInfo('');
+        return;
+      }
       
       const { error } = await supabase.auth.signUp({
         email,
         password,
         options: { data: { full_name: fullName, phone_number: phone } }
       });
-      if (error) return showError(error.message);
+      if (error) {
+        showError(error.message);
+        showInfo('');
+        return;
+      }
       
       alert('✅ Registro exitoso. Tu cuenta está pendiente de aprobación.');
       document.getElementById('loginTab').click();
+      showInfo('');
     };
   </script>
 </body>
