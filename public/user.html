@@ -2,6 +2,7 @@
 <html>
 <head>
   <title>Mi Panel - WhatsApp Bot</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { font-family: Arial; max-width: 900px; margin: 20px auto; padding: 20px; }
     .card { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; }
@@ -52,171 +53,190 @@
       console.error(msg);
     }
 
-    try {
-      document.getElementById('loading').innerHTML = '🔐 Verificando configuración...';
+    async function main() {
+      try {
+        document.getElementById('loading').innerHTML = '🔐 Verificando configuración...';
 
-      if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
-        throw new Error('Configuración de Supabase no cargada');
-      }
+        if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
+          throw new Error('Configuración de Supabase no cargada');
+        }
 
-      const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+        const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
-      document.getElementById('loading').innerHTML = '🔑 Verificando sesión...';
-      let token = localStorage.getItem('sb-token');
-      if (!token) {
-        window.location.href = '/login.html';
-        return;
-      }
+        document.getElementById('loading').innerHTML = '🔑 Verificando sesión...';
+        let token = localStorage.getItem('sb-token');
+        if (!token) {
+          window.location.href = '/login.html';
+          return;
+        }
 
-      const { data: sessionData, error: sessionError } = await supabase.auth.setSession({ access_token: token, refresh_token: '' });
-      if (sessionError) throw new Error('Error al restaurar sesión: ' + sessionError.message);
-
-      document.getElementById('loading').innerHTML = '👤 Cargando perfil...';
-      
-      // Obtener perfil usando el nuevo endpoint (no depende de RLS)
-      const profileRes = await fetch('/api/user/profile', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!profileRes.ok) {
-        const err = await profileRes.json();
-        throw new Error(err.error || 'Error al obtener perfil');
-      }
-      const profile = await profileRes.json();
-
-      console.log('Perfil cargado:', profile);
-
-      if (profile.is_admin) {
-        const adminLink = document.createElement('div');
-        adminLink.innerHTML = '<p>🔧 Eres administrador. <a href="/admin.html">Ir al panel de administración</a></p>';
-        document.getElementById('mainPanel').insertBefore(adminLink, document.getElementById('mainPanel').firstChild);
-      }
-
-      if (!profile.is_approved) {
-        document.getElementById('loading').style.display = 'none';
-        document.body.innerHTML = `
-          <div style="max-width:600px;margin:50px auto;text-align:center;border:1px solid #ffc107;padding:30px;border-radius:8px;background:#fff3cd;">
-            <h1>⏳ Cuenta pendiente de aprobación</h1>
-            <p>Tu registro ha sido exitoso, pero necesitas que el administrador apruebe tu cuenta.</p>
-            <button id="logoutPending">Cerrar Sesión</button>
-          </div>
-        `;
-        document.getElementById('logoutPending').onclick = () => {
+        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({ access_token: token, refresh_token: '' });
+        if (sessionError) {
           localStorage.removeItem('sb-token');
           window.location.href = '/login.html';
-        };
-        return;
-      }
-
-      document.getElementById('loading').style.display = 'none';
-      document.getElementById('mainPanel').style.display = 'block';
-      document.getElementById('phoneDisplay').textContent = profile.phone_number || 'No definido';
-
-      async function apiCall(endpoint, method='GET', body=null) {
-        const res = await fetch(`/api/user${endpoint}`, {
-          method,
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: body ? JSON.stringify(body) : null
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.error || 'Error en la solicitud');
+          return;
         }
-        return res;
-      }
 
-      async function loadStatus() {
+        document.getElementById('loading').innerHTML = '👤 Cargando perfil...';
+        
+        let profile;
         try {
-          const res = await apiCall('/status');
-          const data = await res.json();
-          const statusEl = document.getElementById('statusText');
-
-          if (data.connected) {
-            statusEl.textContent = '🟢 Conectado';
-          } else if (data.qrAvailable) {
-            statusEl.textContent = '🟡 Esperando escaneo QR';
-          } else {
-            statusEl.textContent = '🔴 Desconectado';
+          const profileRes = await fetch('/api/user/profile', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (!profileRes.ok) {
+            if (profileRes.status === 401) {
+              localStorage.removeItem('sb-token');
+              window.location.href = '/login.html';
+              return;
+            }
+            const err = await profileRes.json();
+            throw new Error(err.error || 'Error al obtener perfil');
           }
-
-          if (data.qrAvailable) {
-            document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px;"/>';
-            document.getElementById('codeContainer').innerHTML = '';
-          } else if (data.pairingCode) {
-            document.getElementById('qrContainer').innerHTML = '';
-            document.getElementById('codeContainer').innerHTML = `<p>🔢 Código: <strong>${data.pairingCode}</strong></p>`;
-          } else {
-            document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible.</p>';
-            document.getElementById('codeContainer').innerHTML = '';
-          }
-        } catch (e) {
-          showError('Error al cargar estado: ' + e.message);
+          profile = await profileRes.json();
+          console.log('Perfil cargado:', profile);
+        } catch (profileError) {
+          console.error('Error cargando perfil:', profileError);
+          document.getElementById('loading').innerHTML = `<div class="error">❌ ${profileError.message}</div>`;
+          return;
         }
-      }
 
-      async function loadSettings() {
-        try {
-          const res = await apiCall('/settings');
-          const data = await res.json();
-          document.getElementById('autoReplyActive').checked = data.autoReply?.active || false;
-          document.getElementById('autoReplyText').value = data.autoReply?.text || '';
-          document.getElementById('startHour').value = data.autoReply?.startHour ?? 23;
-          document.getElementById('endHour').value = data.autoReply?.endHour ?? 8;
-        } catch (e) {
-          showError('Error al cargar configuración: ' + e.message);
+        if (profile.is_admin) {
+          const adminLink = document.createElement('div');
+          adminLink.innerHTML = '<p>🔧 Eres administrador. <a href="/admin.html">Ir al panel de administración</a></p>';
+          document.getElementById('mainPanel').insertBefore(adminLink, document.getElementById('mainPanel').firstChild);
         }
-      }
 
-      async function saveSettings() {
-        try {
-          const currentSettings = await (await apiCall('/settings')).json();
-          const settings = {
-            autoReply: {
-              active: document.getElementById('autoReplyActive').checked,
-              text: document.getElementById('autoReplyText').value,
-              startHour: parseInt(document.getElementById('startHour').value),
-              endHour: parseInt(document.getElementById('endHour').value)
-            },
-            tasks: currentSettings.tasks || []
+        if (!profile.is_approved) {
+          document.getElementById('loading').style.display = 'none';
+          document.body.innerHTML = `
+            <div style="max-width:600px;margin:50px auto;text-align:center;border:1px solid #ffc107;padding:30px;border-radius:8px;background:#fff3cd;">
+              <h1>⏳ Cuenta pendiente de aprobación</h1>
+              <p>Tu registro ha sido exitoso, pero necesitas que el administrador apruebe tu cuenta.</p>
+              <button id="logoutPending">Cerrar Sesión</button>
+            </div>
+          `;
+          document.getElementById('logoutPending').onclick = () => {
+            localStorage.removeItem('sb-token');
+            window.location.href = '/login.html';
           };
-          await apiCall('/settings', 'POST', settings);
-          alert('✅ Configuración guardada');
-        } catch (e) {
-          showError('Error al guardar: ' + e.message);
+          return;
         }
-      }
 
-      async function restartBot() {
-        if (!confirm('¿Reiniciar conexión WhatsApp?')) return;
-        try {
-          await apiCall('/restart', 'POST');
-          alert('Reiniciando... Espera unos segundos.');
-          setTimeout(loadStatus, 5000);
-        } catch (e) {
-          showError('Error al reiniciar: ' + e.message);
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('mainPanel').style.display = 'block';
+        document.getElementById('phoneDisplay').textContent = profile.phone_number || 'No definido';
+
+        // API Helper
+        async function apiCall(endpoint, method='GET', body=null) {
+          const res = await fetch(`/api/user${endpoint}`, {
+            method,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: body ? JSON.stringify(body) : null
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Error en la solicitud');
+          }
+          return res;
         }
+
+        async function loadStatus() {
+          try {
+            const res = await apiCall('/status');
+            const data = await res.json();
+            const statusEl = document.getElementById('statusText');
+
+            if (data.connected) {
+              statusEl.textContent = '🟢 Conectado';
+            } else if (data.qrAvailable) {
+              statusEl.textContent = '🟡 Esperando escaneo QR';
+            } else {
+              statusEl.textContent = '🔴 Desconectado';
+            }
+
+            if (data.qrAvailable) {
+              document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px;"/>';
+              document.getElementById('codeContainer').innerHTML = '';
+            } else if (data.pairingCode) {
+              document.getElementById('qrContainer').innerHTML = '';
+              document.getElementById('codeContainer').innerHTML = `<p>🔢 Código: <strong>${data.pairingCode}</strong></p>`;
+            } else {
+              document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible.</p>';
+              document.getElementById('codeContainer').innerHTML = '';
+            }
+          } catch (e) {
+            showError('Error al cargar estado: ' + e.message);
+          }
+        }
+
+        async function loadSettings() {
+          try {
+            const res = await apiCall('/settings');
+            const data = await res.json();
+            document.getElementById('autoReplyActive').checked = data.autoReply?.active || false;
+            document.getElementById('autoReplyText').value = data.autoReply?.text || '';
+            document.getElementById('startHour').value = data.autoReply?.startHour ?? 23;
+            document.getElementById('endHour').value = data.autoReply?.endHour ?? 8;
+          } catch (e) {
+            showError('Error al cargar configuración: ' + e.message);
+          }
+        }
+
+        async function saveSettings() {
+          try {
+            const currentSettings = await (await apiCall('/settings')).json();
+            const settings = {
+              autoReply: {
+                active: document.getElementById('autoReplyActive').checked,
+                text: document.getElementById('autoReplyText').value,
+                startHour: parseInt(document.getElementById('startHour').value),
+                endHour: parseInt(document.getElementById('endHour').value)
+              },
+              tasks: currentSettings.tasks || []
+            };
+            await apiCall('/settings', 'POST', settings);
+            alert('✅ Configuración guardada');
+          } catch (e) {
+            showError('Error al guardar: ' + e.message);
+          }
+        }
+
+        async function restartBot() {
+          if (!confirm('¿Reiniciar conexión WhatsApp?')) return;
+          try {
+            await apiCall('/restart', 'POST');
+            alert('Reiniciando... Espera unos segundos.');
+            setTimeout(loadStatus, 5000);
+          } catch (e) {
+            showError('Error al reiniciar: ' + e.message);
+          }
+        }
+
+        function logout() {
+          localStorage.removeItem('sb-token');
+          window.location.href = '/login.html';
+        }
+
+        document.getElementById('refreshStatus').onclick = loadStatus;
+        document.getElementById('saveSettings').onclick = saveSettings;
+        document.getElementById('restartBot').onclick = restartBot;
+        document.getElementById('logout').onclick = logout;
+
+        loadStatus();
+        loadSettings();
+        setInterval(loadStatus, 30000);
+
+      } catch (error) {
+        document.getElementById('loading').innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+        console.error(error);
       }
-
-      function logout() {
-        localStorage.removeItem('sb-token');
-        window.location.href = '/login.html';
-      }
-
-      document.getElementById('refreshStatus').onclick = loadStatus;
-      document.getElementById('saveSettings').onclick = saveSettings;
-      document.getElementById('restartBot').onclick = restartBot;
-      document.getElementById('logout').onclick = logout;
-
-      loadStatus();
-      loadSettings();
-      setInterval(loadStatus, 30000);
-
-    } catch (error) {
-      document.getElementById('loading').innerHTML = `<div class="error">❌ ${error.message}</div>`;
-      console.error(error);
     }
+
+    main();
   </script>
 </body>
 </html>
