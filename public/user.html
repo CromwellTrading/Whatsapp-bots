@@ -5,60 +5,93 @@
   <style>
     body { font-family: Arial; max-width: 900px; margin: 20px auto; padding: 20px; }
     .card { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; }
-    button { padding: 8px 16px; margin-right: 10px; }
+    button { padding: 8px 16px; margin-right: 10px; cursor: pointer; }
     #logout { float: right; }
     textarea { width: 100%; }
+    .status-badge { display: inline-block; padding: 4px 12px; border-radius: 16px; font-weight: bold; }
+    .connected { background: #d4edda; color: #155724; }
+    .disconnected { background: #f8d7da; color: #721c24; }
+    .waiting { background: #fff3cd; color: #856404; }
   </style>
 </head>
 <body>
   <button id="logout">Cerrar Sesión</button>
-  <h1>Mi Panel de Control</h1>
+  <h1>🤖 Mi Panel de Control</h1>
   
-  <div class="card">
-    <h2>Estado de Conexión</h2>
-    <p>Estado: <span id="statusText">Cargando...</span></p>
-    <p>Número: <span id="phoneDisplay"></span></p>
-    <div id="qrContainer"></div>
-    <div id="codeContainer"></div>
-    <button id="refreshStatus">Actualizar</button>
+  <div id="pendingApproval" style="display:none;">
+    <div style="max-width:600px;margin:50px auto;text-align:center;border:1px solid #ffc107;padding:30px;border-radius:8px;background:#fff3cd;">
+      <h1>⏳ Cuenta pendiente de aprobación</h1>
+      <p>Tu registro ha sido exitoso, pero necesitas que el administrador apruebe tu cuenta para comenzar a usar el bot.</p>
+      <p>Por favor, contacta al administrador.</p>
+      <button id="logoutPending" style="padding:10px 20px;margin-top:20px;">Cerrar Sesión</button>
+    </div>
   </div>
   
-  <div class="card">
-    <h2>Auto-Reply</h2>
-    <label><input type="checkbox" id="autoReplyActive"> Activar</label><br>
-    <label>Mensaje:<br><textarea id="autoReplyText" rows="3"></textarea></label><br>
-    <label>Hora inicio: <input type="number" id="startHour" min="0" max="23"></label>
-    <label>Hora fin: <input type="number" id="endHour" min="0" max="23"></label><br>
-    <button id="saveSettings">Guardar</button>
-  </div>
-  
-  <div class="card">
-    <h2>Mis Tareas Programadas</h2>
-    <!-- Aquí se listarían con opciones de agregar/editar/eliminar -->
-    <p>Funcionalidad de tareas en desarrollo.</p>
+  <div id="mainPanel" style="display:none;">
+    <div class="card">
+      <h2>📡 Estado de Conexión</h2>
+      <p>Estado: <span id="statusText" class="status-badge">Cargando...</span></p>
+      <p>Número vinculado: <strong><span id="phoneDisplay"></span></strong></p>
+      <div id="qrContainer" style="text-align:center;"></div>
+      <div id="codeContainer" style="font-size:1.2em;margin:10px 0;"></div>
+      <button id="refreshStatus">🔄 Actualizar</button>
+      <button id="restartBot" style="background:#ffc107;">⚠️ Reiniciar Conexión</button>
+    </div>
+    
+    <div class="card">
+      <h2>💬 Auto-Reply</h2>
+      <label><input type="checkbox" id="autoReplyActive"> Activar respuesta automática</label><br><br>
+      <label>Mensaje:<br><textarea id="autoReplyText" rows="3"></textarea></label><br><br>
+      <label>Hora inicio (0-23): <input type="number" id="startHour" min="0" max="23"></label>
+      <label>Hora fin (0-23): <input type="number" id="endHour" min="0" max="23"></label><br><br>
+      <button id="saveSettings">💾 Guardar Configuración</button>
+    </div>
+    
+    <div class="card">
+      <h2>📋 Mis Tareas Programadas</h2>
+      <p><em>Funcionalidad en desarrollo. Próximamente podrás crear y gestionar tareas programadas.</em></p>
+    </div>
   </div>
 
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-    const SUPABASE_URL = 'TU_SUPABASE_URL';
-    const SUPABASE_ANON_KEY = 'TU_ANON_KEY';
+    
+    // ⚠️ REEMPLAZA CON TUS DATOS REALES DE SUPABASE
+    const SUPABASE_URL = 'https://tu-proyecto.supabase.co';
+    const SUPABASE_ANON_KEY = 'tu-anon-key';
+    
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     
     let token = localStorage.getItem('sb-token');
     if (!token) window.location.href = '/login.html';
     
-    // Configurar cliente con token
     supabase.auth.setSession({ access_token: token, refresh_token: '' });
     
-    // Cargar perfil
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { logout(); }
     
-    // Ver si es admin y redirigir si corresponde
-    const { data: profile } = await supabase.from('profiles').select('is_admin, phone_number').eq('id', user.id).single();
-    if (profile?.is_admin) window.location.href = '/admin.html';
+    // Obtener perfil completo
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_admin, phone_number, is_approved')
+      .eq('id', user.id)
+      .single();
     
-    document.getElementById('phoneDisplay').textContent = profile?.phone_number || 'No definido';
+    // Si es admin, redirigir
+    if (profile?.is_admin) {
+      window.location.href = '/admin.html';
+    }
+    
+    // Verificar aprobación
+    if (!profile?.is_approved) {
+      document.getElementById('pendingApproval').style.display = 'block';
+      document.getElementById('logoutPending').onclick = logout;
+      return;
+    }
+    
+    // Usuario aprobado: mostrar panel
+    document.getElementById('mainPanel').style.display = 'block';
+    document.getElementById('phoneDisplay').textContent = profile.phone_number || 'No definido';
     
     // Funciones API con token
     async function apiCall(endpoint, method='GET', body=null) {
@@ -74,19 +107,34 @@
     }
     
     async function loadStatus() {
-      const res = await apiCall('/status');
-      const data = await res.json();
-      document.getElementById('statusText').textContent = data.connected ? 'Conectado' : 'Desconectado';
-      
-      if (data.qrAvailable) {
-        document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR" style="max-width:250px"/>';
-        document.getElementById('codeContainer').innerHTML = '';
-      } else if (data.pairingCode) {
-        document.getElementById('qrContainer').innerHTML = '';
-        document.getElementById('codeContainer').innerHTML = `<p>Código de 8 dígitos: <strong>${data.pairingCode}</strong></p>`;
-      } else {
-        document.getElementById('qrContainer').innerHTML = 'No hay QR disponible.';
-        document.getElementById('codeContainer').innerHTML = '';
+      try {
+        const res = await apiCall('/status');
+        const data = await res.json();
+        const statusEl = document.getElementById('statusText');
+        
+        if (data.connected) {
+          statusEl.textContent = '🟢 Conectado';
+          statusEl.className = 'status-badge connected';
+        } else if (data.qrAvailable) {
+          statusEl.textContent = '🟡 Esperando escaneo QR';
+          statusEl.className = 'status-badge waiting';
+        } else {
+          statusEl.textContent = '🔴 Desconectado';
+          statusEl.className = 'status-badge disconnected';
+        }
+        
+        if (data.qrAvailable) {
+          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px;border:1px solid #ddd;padding:10px;"/>';
+          document.getElementById('codeContainer').innerHTML = '';
+        } else if (data.pairingCode) {
+          document.getElementById('qrContainer').innerHTML = '';
+          document.getElementById('codeContainer').innerHTML = `<p>🔢 Código de 8 dígitos: <strong style="font-size:1.4em;">${data.pairingCode}</strong></p>`;
+        } else {
+          document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible.</p>';
+          document.getElementById('codeContainer').innerHTML = '';
+        }
+      } catch (err) {
+        console.error('Error cargando estado:', err);
       }
     }
     
@@ -99,8 +147,8 @@
       document.getElementById('endHour').value = data.autoReply?.endHour ?? 8;
     }
     
-    document.getElementById('refreshStatus').onclick = loadStatus;
-    document.getElementById('saveSettings').onclick = async () => {
+    async function saveSettings() {
+      const currentSettings = await (await apiCall('/settings')).json();
       const settings = {
         autoReply: {
           active: document.getElementById('autoReplyActive').checked,
@@ -108,17 +156,30 @@
           startHour: parseInt(document.getElementById('startHour').value),
           endHour: parseInt(document.getElementById('endHour').value)
         },
-        tasks: [] // Mantener tareas existentes
+        tasks: currentSettings.tasks || []
       };
       await apiCall('/settings', 'POST', settings);
-      alert('Configuración guardada');
-    };
+      alert('✅ Configuración guardada');
+    }
     
-    document.getElementById('logout').onclick = () => {
+    async function restartBot() {
+      if (!confirm('¿Reiniciar la conexión de WhatsApp? Se generará un nuevo QR/código.')) return;
+      await apiCall('/restart', 'POST');
+      alert('Reiniciando... Espera unos segundos y actualiza el estado.');
+      setTimeout(loadStatus, 5000);
+    }
+    
+    function logout() {
       localStorage.removeItem('sb-token');
       window.location.href = '/login.html';
-    };
+    }
     
+    document.getElementById('refreshStatus').onclick = loadStatus;
+    document.getElementById('saveSettings').onclick = saveSettings;
+    document.getElementById('restartBot').onclick = restartBot;
+    document.getElementById('logout').onclick = logout;
+    
+    // Carga inicial
     loadStatus();
     loadSettings();
     setInterval(loadStatus, 15000);
