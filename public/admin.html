@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Admin - WhatsApp Bot SaaS</title>
+  <style>
+    body { font-family: Arial; max-width: 1000px; margin: 20px auto; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background-color: #f2f2f2; }
+    .connected { color: green; }
+    .disconnected { color: red; }
+  </style>
+</head>
+<body>
+  <button id="logout">Cerrar Sesión</button>
+  <h1>Panel de Administración</h1>
+  
+  <h2>Usuarios Registrados</h2>
+  <table id="usersTable">
+    <thead>
+      <tr><th>Teléfono</th><th>Nombre</th><th>Admin</th><th>Estado</th><th>Acciones</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script type="module">
+    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+    const SUPABASE_URL = 'TU_SUPABASE_URL';
+    const SUPABASE_ANON_KEY = 'TU_ANON_KEY';
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    
+    let token = localStorage.getItem('sb-token');
+    if (!token) window.location.href = '/login.html';
+    supabase.auth.setSession({ access_token: token, refresh_token: '' });
+    
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { logout(); }
+    
+    const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', user.id).single();
+    if (!profile?.is_admin) window.location.href = '/user.html';
+    
+    async function apiCall(endpoint, method='GET', body=null) {
+      const res = await fetch(`/api/admin${endpoint}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: body ? JSON.stringify(body) : null
+      });
+      return res;
+    }
+    
+    async function loadUsers() {
+      const res = await apiCall('/users');
+      const users = await res.json();
+      const tbody = document.querySelector('#usersTable tbody');
+      tbody.innerHTML = '';
+      users.forEach(u => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${u.phone_number}</td>
+          <td>${u.full_name || ''}</td>
+          <td>${u.is_admin ? 'Sí' : 'No'}</td>
+          <td class="${u.connected ? 'connected' : 'disconnected'}">${u.connected ? 'Conectado' : (u.hasQR ? 'Esperando QR' : 'Desconectado')}</td>
+          <td>
+            <button onclick="restartUser('${u.id}')">Reiniciar</button>
+            <button onclick="deleteUser('${u.id}')">Eliminar</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+    
+    window.restartUser = async (userId) => {
+      await apiCall(`/users/${userId}/restart`, 'POST');
+      loadUsers();
+    };
+    
+    window.deleteUser = async (userId) => {
+      if (!confirm('¿Eliminar usuario permanentemente?')) return;
+      await apiCall(`/users/${userId}`, 'DELETE');
+      loadUsers();
+    };
+    
+    document.getElementById('logout').onclick = () => {
+      localStorage.removeItem('sb-token');
+      window.location.href = '/login.html';
+    };
+    
+    loadUsers();
+    setInterval(loadUsers, 30000);
+  </script>
+</body>
+</html>
