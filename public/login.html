@@ -2,6 +2,7 @@
 <html>
 <head>
   <title>Login - WhatsApp Bot SaaS</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { font-family: Arial; max-width: 400px; margin: 50px auto; padding: 20px; }
     input { width: 100%; padding: 12px; margin: 8px 0; box-sizing: border-box; }
@@ -54,17 +55,47 @@
     
     const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
     
+    // Limpiar automáticamente token inválido al cargar
+    (async () => {
+      const token = localStorage.getItem('sb-token');
+      if (!token) return;
+      
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (error || !user) {
+          console.log('Token inválido, eliminando...');
+          localStorage.removeItem('sb-token');
+          return;
+        }
+        
+        // Obtener perfil para decidir redirección
+        const profileRes = await fetch('/api/user/profile', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (profileRes.ok) {
+          const profile = await profileRes.json();
+          window.location.href = profile.is_admin ? '/admin.html' : '/user.html';
+        } else {
+          localStorage.removeItem('sb-token');
+        }
+      } catch (e) {
+        localStorage.removeItem('sb-token');
+      }
+    })();
+    
     document.getElementById('loginTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'block';
       document.getElementById('registerForm').style.display = 'none';
       document.getElementById('loginTab').classList.add('active');
       document.getElementById('registerTab').classList.remove('active');
+      document.getElementById('errorMsg').textContent = '';
     };
     document.getElementById('registerTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'none';
       document.getElementById('registerForm').style.display = 'block';
       document.getElementById('registerTab').classList.add('active');
       document.getElementById('loginTab').classList.remove('active');
+      document.getElementById('errorMsg').textContent = '';
     };
     
     document.getElementById('loginForm').onsubmit = async (e) => {
@@ -72,13 +103,21 @@
       showError('');
       const email = document.getElementById('loginEmail').value;
       const password = document.getElementById('loginPassword').value;
+      
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) return showError(error.message);
       
       localStorage.setItem('sb-token', data.session.access_token);
       
-      const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', data.user.id).single();
-      window.location.href = profile?.is_admin ? '/admin.html' : '/user.html';
+      try {
+        const profileRes = await fetch('/api/user/profile', {
+          headers: { 'Authorization': `Bearer ${data.session.access_token}` }
+        });
+        const profile = await profileRes.json();
+        window.location.href = profile.is_admin ? '/admin.html' : '/user.html';
+      } catch {
+        window.location.href = '/user.html';
+      }
     };
     
     document.getElementById('registerForm').onsubmit = async (e) => {
@@ -101,15 +140,6 @@
       alert('✅ Registro exitoso. Tu cuenta está pendiente de aprobación.');
       document.getElementById('loginTab').click();
     };
-    
-    // Redirigir si ya hay sesión
-    (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', session.user.id).single();
-        window.location.href = profile?.is_admin ? '/admin.html' : '/user.html';
-      }
-    })();
   </script>
 </body>
 </html>
