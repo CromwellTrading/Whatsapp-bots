@@ -13,24 +13,8 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// Rutas de autenticación
-app.use('/api/auth', require('./routes/auth'));
-
-// Rutas de usuario (protegidas)
-app.use('/api/user', require('./routes/user'));
-
-// Rutas de administrador (protegidas)
-app.use('/api/admin', require('./routes/admin'));
-
-// Redireccionar raíz al login
-app.get('/', (req, res) => res.redirect('/login.html'));
-
-app.listen(PORT, async () => {
-  console.log(`🌐 Servidor corriendo en http://localhost:${PORT}`);
-
-  // Agrega esto en index.js antes de las rutas estáticas
+// Endpoint de configuración para el frontend (claves públicas)
 app.get('/config.js', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript');
   res.send(`
@@ -38,12 +22,25 @@ app.get('/config.js', (req, res) => {
     window.SUPABASE_ANON_KEY = "${process.env.SUPABASE_ANON_KEY}";
   `);
 });
-  
-  // Iniciar gestor de instancias (levanta conexiones existentes)
+
+// Health check para Render
+app.get('/health', (req, res) => res.status(200).send('OK'));
+
+// Servir archivos estáticos
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Rutas de API
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/user', require('./routes/user'));
+app.use('/api/admin', require('./routes/admin'));
+
+app.get('/', (req, res) => res.redirect('/login.html'));
+
+app.listen(PORT, async () => {
+  console.log(`🌐 Servidor corriendo en http://localhost:${PORT}`);
+
   await initManager();
-  
-  // Iniciar cron centralizado
   initCron();
-  
+
   console.log('✅ Sistema SaaS inicializado');
 });
