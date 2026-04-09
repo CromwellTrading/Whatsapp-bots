@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mi Panel - WhatsApp Bot</title>
+  <style>
+    body { font-family: Arial; max-width: 900px; margin: 20px auto; padding: 20px; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; }
+    button { padding: 8px 16px; margin-right: 10px; }
+    #logout { float: right; }
+    textarea { width: 100%; }
+  </style>
+</head>
+<body>
+  <button id="logout">Cerrar Sesión</button>
+  <h1>Mi Panel de Control</h1>
+  
+  <div class="card">
+    <h2>Estado de Conexión</h2>
+    <p>Estado: <span id="statusText">Cargando...</span></p>
+    <p>Número: <span id="phoneDisplay"></span></p>
+    <div id="qrContainer"></div>
+    <div id="codeContainer"></div>
+    <button id="refreshStatus">Actualizar</button>
+  </div>
+  
+  <div class="card">
+    <h2>Auto-Reply</h2>
+    <label><input type="checkbox" id="autoReplyActive"> Activar</label><br>
+    <label>Mensaje:<br><textarea id="autoReplyText" rows="3"></textarea></label><br>
+    <label>Hora inicio: <input type="number" id="startHour" min="0" max="23"></label>
+    <label>Hora fin: <input type="number" id="endHour" min="0" max="23"></label><br>
+    <button id="saveSettings">Guardar</button>
+  </div>
+  
+  <div class="card">
+    <h2>Mis Tareas Programadas</h2>
+    <!-- Aquí se listarían con opciones de agregar/editar/eliminar -->
+    <p>Funcionalidad de tareas en desarrollo.</p>
+  </div>
+
+  <script type="module">
+    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+    const SUPABASE_URL = 'TU_SUPABASE_URL';
+    const SUPABASE_ANON_KEY = 'TU_ANON_KEY';
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    
+    let token = localStorage.getItem('sb-token');
+    if (!token) window.location.href = '/login.html';
+    
+    // Configurar cliente con token
+    supabase.auth.setSession({ access_token: token, refresh_token: '' });
+    
+    // Cargar perfil
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { logout(); }
+    
+    // Ver si es admin y redirigir si corresponde
+    const { data: profile } = await supabase.from('profiles').select('is_admin, phone_number').eq('id', user.id).single();
+    if (profile?.is_admin) window.location.href = '/admin.html';
+    
+    document.getElementById('phoneDisplay').textContent = profile?.phone_number || 'No definido';
+    
+    // Funciones API con token
+    async function apiCall(endpoint, method='GET', body=null) {
+      const res = await fetch(`/api/user${endpoint}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: body ? JSON.stringify(body) : null
+      });
+      return res;
+    }
+    
+    async function loadStatus() {
+      const res = await apiCall('/status');
+      const data = await res.json();
+      document.getElementById('statusText').textContent = data.connected ? 'Conectado' : 'Desconectado';
+      
+      if (data.qrAvailable) {
+        document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR" style="max-width:250px"/>';
+        document.getElementById('codeContainer').innerHTML = '';
+      } else if (data.pairingCode) {
+        document.getElementById('qrContainer').innerHTML = '';
+        document.getElementById('codeContainer').innerHTML = `<p>Código de 8 dígitos: <strong>${data.pairingCode}</strong></p>`;
+      } else {
+        document.getElementById('qrContainer').innerHTML = 'No hay QR disponible.';
+        document.getElementById('codeContainer').innerHTML = '';
+      }
+    }
+    
+    async function loadSettings() {
+      const res = await apiCall('/settings');
+      const data = await res.json();
+      document.getElementById('autoReplyActive').checked = data.autoReply?.active || false;
+      document.getElementById('autoReplyText').value = data.autoReply?.text || '';
+      document.getElementById('startHour').value = data.autoReply?.startHour ?? 23;
+      document.getElementById('endHour').value = data.autoReply?.endHour ?? 8;
+    }
+    
+    document.getElementById('refreshStatus').onclick = loadStatus;
+    document.getElementById('saveSettings').onclick = async () => {
+      const settings = {
+        autoReply: {
+          active: document.getElementById('autoReplyActive').checked,
+          text: document.getElementById('autoReplyText').value,
+          startHour: parseInt(document.getElementById('startHour').value),
+          endHour: parseInt(document.getElementById('endHour').value)
+        },
+        tasks: [] // Mantener tareas existentes
+      };
+      await apiCall('/settings', 'POST', settings);
+      alert('Configuración guardada');
+    };
+    
+    document.getElementById('logout').onclick = () => {
+      localStorage.removeItem('sb-token');
+      window.location.href = '/login.html';
+    };
+    
+    loadStatus();
+    loadSettings();
+    setInterval(loadStatus, 15000);
+  </script>
+</body>
+</html>
