@@ -38,7 +38,7 @@ async function approvalMiddleware(req, res, next) {
 
 // -------------------- RUTAS --------------------
 
-// Nuevo endpoint para obtener el perfil (sin restricción de aprobación)
+// Endpoint público (solo autenticación, no aprobación)
 router.get('/profile', authMiddleware, async (req, res) => {
   const { data: profile, error } = await supabaseAdmin
     .from('profiles')
@@ -54,14 +54,7 @@ router.get('/profile', authMiddleware, async (req, res) => {
   res.json(profile);
 });
 
-// Estado de aprobación (accesible siempre)
-router.get('/approval-status', authMiddleware, (req, res) => {
-  // Se obtiene el perfil en el middleware implícitamente; lo delegamos al endpoint /profile
-  // pero mantenemos compatibilidad
-  res.redirect('/api/user/profile');
-});
-
-// A partir de aquí, todas las rutas requieren aprobación
+// Middleware de aprobación para el resto de rutas
 router.use(approvalMiddleware);
 
 router.get('/status', async (req, res) => {
