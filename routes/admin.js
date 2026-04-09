@@ -7,30 +7,40 @@ const { getAllInstances, stopUserInstance, startUserInstance, startUserIfApprove
 async function adminMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
+    console.log('❌ Admin Middleware: No auth header');
     return res.status(401).json({ error: 'No autorizado' });
   }
 
   const token = authHeader.split(' ')[1];
   if (!token) {
+    console.log('❌ Admin Middleware: No token');
     return res.status(401).json({ error: 'Token no presente' });
   }
 
-  const { data: { user }, error } = await supabase.auth.getUser(token);
+  // Usamos supabaseAdmin para evitar RLS en la verificación
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
   if (error || !user) {
+    console.log('❌ Admin Middleware: Token inválido', error?.message);
     return res.status(401).json({ error: 'Token inválido o expirado' });
   }
 
-  const { data: profile, error: profileError } = await supabase
+  console.log(`🔑 Admin Middleware: user.id = ${user.id}`);
+
+  const { data: profile, error: profileError } = await supabaseAdmin
     .from('profiles')
-    .select('is_admin')
+    .select('is_admin, phone_number')
     .eq('id', user.id)
     .single();
 
   if (profileError || !profile) {
+    console.log('❌ Admin Middleware: Perfil no encontrado', profileError?.message);
     return res.status(401).json({ error: 'Perfil no encontrado' });
   }
 
+  console.log(`👤 Admin Middleware: is_admin = ${profile.is_admin}`);
+
   if (!profile.is_admin) {
+    console.log('⛔ Admin Middleware: Usuario no es admin');
     return res.status(403).json({ error: 'Acceso denegado' });
   }
 
@@ -40,11 +50,17 @@ async function adminMiddleware(req, res, next) {
 
 // Obtener lista de todos los usuarios
 router.get('/users', adminMiddleware, async (req, res) => {
+  console.log('📋 GET /admin/users');
   const { data: profiles, error } = await supabaseAdmin
     .from('profiles')
     .select('id, phone_number, full_name, is_admin, is_approved, created_at');
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    console.error('❌ Error al obtener perfiles:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
+
+  console.log(`✅ Se encontraron ${profiles.length} perfiles`);
 
   const instances = getAllInstances();
   const usersWithStatus = profiles.map(p => {
