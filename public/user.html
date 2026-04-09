@@ -15,11 +15,11 @@
 </head>
 <body>
   <div id="loading">⏳ Cargando panel...</div>
-  
+
   <div id="mainPanel" style="display:none;">
     <button id="logout">Cerrar Sesión</button>
     <h1>🤖 Mi Panel de Control</h1>
-    
+
     <div class="card">
       <h2>📡 Estado de Conexión</h2>
       <p>Estado: <span id="statusText">Cargando...</span></p>
@@ -29,7 +29,7 @@
       <button id="refreshStatus">🔄 Actualizar</button>
       <button id="restartBot">⚠️ Reiniciar Conexión</button>
     </div>
-    
+
     <div class="card">
       <h2>💬 Auto-Reply</h2>
       <label><input type="checkbox" id="autoReplyActive"> Activar respuesta automática</label><br><br>
@@ -38,67 +38,63 @@
       <label>Hora fin (0-23): <input type="number" id="endHour" min="0" max="23"></label><br><br>
       <button id="saveSettings">💾 Guardar Configuración</button>
     </div>
-    
+
     <div id="errorMessage" class="error" style="display:none;"></div>
   </div>
 
   <script src="/config.js"></script>
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-    
-    // Mostrar errores en UI
+
     function showError(msg) {
       const el = document.getElementById('errorMessage');
       el.textContent = '❌ ' + msg;
       el.style.display = 'block';
     }
-    
+
     try {
+      document.getElementById('loading').innerHTML = '🔐 Verificando configuración...';
+
       if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
         throw new Error('Configuración de Supabase no cargada');
       }
-      
+
       const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-      
+
+      document.getElementById('loading').innerHTML = '🔑 Verificando sesión...';
       let token = localStorage.getItem('sb-token');
       if (!token) {
         window.location.href = '/login.html';
-        throw new Error('Redirigiendo...');
+        return;
       }
-      
-      supabase.auth.setSession({ access_token: token, refresh_token: '' });
-      
-      // Obtener usuario
+
+      const { data: sessionData, error: sessionError } = await supabase.auth.setSession({ access_token: token, refresh_token: '' });
+      if (sessionError) throw new Error('Error al restaurar sesión: ' + sessionError.message);
+
+      document.getElementById('loading').innerHTML = '👤 Cargando perfil...';
       const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) {
-        localStorage.removeItem('sb-token');
-        window.location.href = '/login.html';
-        throw new Error('Sesión inválida');
-      }
-      
-      // Obtener perfil
+      if (userError || !user) throw new Error('Sesión inválida');
+
       const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('is_admin, phone_number, is_approved')
         .eq('id', user.id)
         .single();
-      
+
       if (profileError) throw new Error('Error al cargar perfil: ' + profileError.message);
-      
-      // Si es admin, ofrecer enlace al panel admin sin redirigir forzosamente
+
       if (profile.is_admin) {
         const adminLink = document.createElement('div');
         adminLink.innerHTML = '<p>🔧 Eres administrador. <a href="/admin.html">Ir al panel de administración</a></p>';
         document.getElementById('mainPanel').insertBefore(adminLink, document.getElementById('mainPanel').firstChild);
       }
-      
-      // Verificar aprobación
+
       if (!profile.is_approved) {
         document.getElementById('loading').style.display = 'none';
         document.body.innerHTML = `
           <div style="max-width:600px;margin:50px auto;text-align:center;border:1px solid #ffc107;padding:30px;border-radius:8px;background:#fff3cd;">
             <h1>⏳ Cuenta pendiente de aprobación</h1>
-            <p>Tu registro ha sido exitoso, pero necesitas que el administrador apruebe tu cuenta para comenzar a usar el bot.</p>
+            <p>Tu registro ha sido exitoso, pero necesitas que el administrador apruebe tu cuenta.</p>
             <button id="logoutPending">Cerrar Sesión</button>
           </div>
         `;
@@ -108,13 +104,11 @@
         };
         return;
       }
-      
-      // Usuario aprobado: mostrar panel
+
       document.getElementById('loading').style.display = 'none';
       document.getElementById('mainPanel').style.display = 'block';
       document.getElementById('phoneDisplay').textContent = profile.phone_number || 'No definido';
-      
-      // API Helper
+
       async function apiCall(endpoint, method='GET', body=null) {
         const res = await fetch(`/api/user${endpoint}`, {
           method,
@@ -130,13 +124,13 @@
         }
         return res;
       }
-      
+
       async function loadStatus() {
         try {
           const res = await apiCall('/status');
           const data = await res.json();
           const statusEl = document.getElementById('statusText');
-          
+
           if (data.connected) {
             statusEl.textContent = '🟢 Conectado';
           } else if (data.qrAvailable) {
@@ -144,7 +138,7 @@
           } else {
             statusEl.textContent = '🔴 Desconectado';
           }
-          
+
           if (data.qrAvailable) {
             document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px;"/>';
             document.getElementById('codeContainer').innerHTML = '';
@@ -159,7 +153,7 @@
           showError('Error al cargar estado: ' + e.message);
         }
       }
-      
+
       async function loadSettings() {
         try {
           const res = await apiCall('/settings');
@@ -172,7 +166,7 @@
           showError('Error al cargar configuración: ' + e.message);
         }
       }
-      
+
       async function saveSettings() {
         try {
           const currentSettings = await (await apiCall('/settings')).json();
@@ -191,7 +185,7 @@
           showError('Error al guardar: ' + e.message);
         }
       }
-      
+
       async function restartBot() {
         if (!confirm('¿Reiniciar conexión WhatsApp?')) return;
         try {
@@ -202,23 +196,23 @@
           showError('Error al reiniciar: ' + e.message);
         }
       }
-      
+
       function logout() {
         localStorage.removeItem('sb-token');
         window.location.href = '/login.html';
       }
-      
+
       document.getElementById('refreshStatus').onclick = loadStatus;
       document.getElementById('saveSettings').onclick = saveSettings;
       document.getElementById('restartBot').onclick = restartBot;
       document.getElementById('logout').onclick = logout;
-      
+
       loadStatus();
       loadSettings();
       setInterval(loadStatus, 30000);
-      
+
     } catch (error) {
-      document.getElementById('loading').innerHTML = `<div class="error">Error: ${error.message}</div>`;
+      document.getElementById('loading').innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
       console.error(error);
     }
   </script>
