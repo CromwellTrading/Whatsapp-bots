@@ -5,7 +5,7 @@ const { initAuthCreds, BufferJSON, proto } = require('@whiskeysockets/baileys');
  * Crea un adaptador de estado de autenticación para un usuario específico
  * @param {string} userId - UUID del usuario en Supabase
  */
-function createSupabaseAuthAdapter(userId) {
+async function createSupabaseAuthAdapter(userId) {
   const writeData = async (key, data) => {
     try {
       const { error } = await supabaseAdmin
