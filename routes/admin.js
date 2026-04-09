@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { supabase, supabaseAdmin } = require('../auth/supabase');
-const { getAllInstances, stopUserInstance, startUserInstance } = require('../core/manager');
+const { getAllInstances, stopUserInstance, startUserInstance, startUserIfApproved } = require('../core/manager');
 
 // Middleware que verifica que el usuario sea admin
 async function adminMiddleware(req, res, next) {
@@ -28,7 +28,7 @@ async function adminMiddleware(req, res, next) {
 router.get('/users', adminMiddleware, async (req, res) => {
   const { data: profiles, error } = await supabaseAdmin
     .from('profiles')
-    .select('id, phone_number, full_name, is_admin, created_at');
+    .select('id, phone_number, full_name, is_admin, is_approved, created_at');
   
   if (error) return res.status(500).json({ error: error.message });
   
@@ -56,6 +56,23 @@ router.get('/users/:userId/settings', adminMiddleware, async (req, res) => {
   
   if (error) return res.status(404).json({ error: 'Configuración no encontrada' });
   res.json(data.data);
+});
+
+// Aprobar usuario
+router.post('/users/:userId/approve', adminMiddleware, async (req, res) => {
+  const { userId } = req.params;
+  
+  const { error } = await supabaseAdmin
+    .from('profiles')
+    .update({ is_approved: true })
+    .eq('id', userId);
+  
+  if (error) return res.status(500).json({ error: error.message });
+  
+  // Iniciar instancia para el usuario recién aprobado
+  await startUserIfApproved(userId);
+  
+  res.json({ success: true });
 });
 
 // Reiniciar instancia de un usuario
