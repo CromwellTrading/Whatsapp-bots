@@ -46,6 +46,13 @@
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
     
+    // Limpieza forzada si la URL contiene #clear
+    if (window.location.hash === '#clear') {
+      localStorage.clear();
+      sessionStorage.clear();
+      window.location.href = '/login.html';
+    }
+    
     const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
     
     function showError(msg) {
@@ -55,17 +62,17 @@
       document.getElementById('infoMsg').textContent = msg;
     }
     
-    // Limpiar token inválido y mostrar mensaje
-    async function checkAndRedirect() {
+    // Verificar token existente (sin redirigir si hay error, solo limpiar)
+    async function checkExistingSession() {
       const token = localStorage.getItem('sb-token');
       if (!token) return;
       
-      showInfo('Verificando sesión existente...');
+      showInfo('Verificando sesión...');
       
       try {
         const { data: { user }, error } = await supabase.auth.getUser(token);
         if (error || !user) {
-          showInfo('Sesión expirada. Por favor inicia sesión de nuevo.');
+          showInfo('Sesión expirada. Inicia sesión nuevamente.');
           localStorage.removeItem('sb-token');
           return;
         }
@@ -77,7 +84,7 @@
           const profile = await profileRes.json();
           window.location.href = profile.is_admin ? '/admin.html' : '/user.html';
         } else {
-          showInfo('No se pudo cargar el perfil. Inicia sesión nuevamente.');
+          showInfo('No se pudo cargar el perfil. Inicia sesión manualmente.');
           localStorage.removeItem('sb-token');
         }
       } catch (e) {
@@ -86,8 +93,7 @@
       }
     }
     
-    // Ejecutar verificación al cargar
-    checkAndRedirect();
+    checkExistingSession();
     
     document.getElementById('loginTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'block';
