@@ -55,6 +55,7 @@
         
         <button id="refreshStatus">🔄 Actualizar</button>
         <button id="restartBot">⚠️ Reiniciar Conexión</button>
+        <button id="clearSessionBtn" style="background:#dc3545; color:white;">🧹 Limpiar sesión</button>
       </div>
     </div>
 
@@ -257,6 +258,7 @@
       };
       document.getElementById('refreshStatus').onclick = loadStatus;
       document.getElementById('restartBot').onclick = restartBot;
+      document.getElementById('clearSessionBtn').onclick = clearSession;
       document.getElementById('requestPairingBtn').onclick = requestPairingCode;
       document.getElementById('saveSettings').onclick = saveAutoReply;
       document.getElementById('loadGroups').onclick = loadGroupsList;
@@ -340,6 +342,17 @@
         await apiCall('/restart', 'POST');
         alert('Reiniciando...');
         setTimeout(loadStatus, 5000);
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function clearSession() {
+      if (!confirm('¿Eliminar la sesión de WhatsApp por completo? Deberás volver a vincular.')) return;
+      try {
+        await apiCall('/clear-session', 'POST');
+        alert('Sesión eliminada. La página se recargará.');
+        location.reload();
       } catch (e) {
         showError(e.message);
       }
