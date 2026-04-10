@@ -11,7 +11,9 @@ const { getSettings } = require('../utils/db');
 const instances = new Map();
 
 async function startUserInstance(userId, phoneNumber) {
-  console.log(`[User ${userId}] Iniciando instancia para ${phoneNumber}`);
+  // Asegurar que phoneNumber sea string limpio
+  const cleanPhone = String(phoneNumber).replace(/\D/g, '');
+  console.log(`[User ${userId}] Iniciando instancia para ${cleanPhone}`);
 
   const adapter = await createSupabaseAuthAdapter(userId);
   const { state, saveCreds } = adapter;
@@ -35,7 +37,7 @@ async function startUserInstance(userId, phoneNumber) {
     qr: null,
     pairingCode: null,
     isConnected: false,
-    userData: { userId, phoneNumber }
+    userData: { userId, phoneNumber: cleanPhone }
   });
 
   const userBot = createUserBot(userId, sock);
@@ -77,18 +79,18 @@ async function startUserInstance(userId, phoneNumber) {
 
       if (shouldReconnect) {
         await delay(10000);
-        startUserInstance(userId, phoneNumber);
+        startUserInstance(userId, cleanPhone);
       } else if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
         console.log(`[User ${userId}] Sesión cerrada. Eliminando credenciales.`);
         await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
-        startUserInstance(userId, phoneNumber);
+        startUserInstance(userId, cleanPhone);
       }
     }
 
-    if (connection === 'connecting' && !qr && phoneNumber) {
+    if (connection === 'connecting' && !qr && cleanPhone) {
       try {
         await delay(5000);
-        const code = await sock.requestPairingCode(phoneNumber);
+        const code = await sock.requestPairingCode(cleanPhone);
         instance.pairingCode = code;
         console.log(`[User ${userId}] Código de emparejamiento: ${code?.match(/.{1,4}/g)?.join('-')}`);
       } catch (err) {
@@ -170,6 +172,21 @@ async function getGroupsForUser(userId) {
   }
 }
 
+// NUEVA FUNCIÓN: Limpiar sesión de WhatsApp para un usuario
+async function clearUserSession(userId) {
+  const instance = instances.get(userId);
+  if (instance) {
+    try {
+      await instance.sock?.logout();
+    } catch (e) {}
+    await stopUserInstance(userId);
+  }
+  // Borrar credenciales de Supabase
+  await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
+  console.log(`[User ${userId}] Sesión eliminada completamente.`);
+  return true;
+}
+
 module.exports = {
   startUserInstance,
   stopUserInstance,
@@ -178,5 +195,6 @@ module.exports = {
   initManager,
   startUserIfApproved,
   getGroupsForUser,
+  clearUserSession,
   instances
 };
