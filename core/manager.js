@@ -11,25 +11,27 @@ const { getSettings } = require('../utils/db');
 const instances = new Map();
 
 async function startUserInstance(userId, phoneNumber) {
-  // Asegurar que phoneNumber sea string limpio
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
-  console.log(`[User ${userId}] Iniciando instancia para ${cleanPhone}`);
+  console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone}`);
 
   const adapter = await createSupabaseAuthAdapter(userId);
   const { state, saveCreds } = adapter;
   const { version } = await fetchLatestBaileysVersion();
+  console.log(`[User ${userId}] 📦 Baileys version: ${version.join('.')}`);
 
   const sock = makeWASocket({
     version,
-    logger: pino({ level: 'silent' }),
+    logger: pino({ level: 'debug' }),
     printQRInTerminal: false,
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'debug' })),
     },
     browser: ['Ubuntu', 'Chrome', '20.0.0'],
     markOnlineOnConnect: true,
     syncFullHistory: false,
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000,
   });
 
   instances.set(userId, {
@@ -43,24 +45,27 @@ async function startUserInstance(userId, phoneNumber) {
   const userBot = createUserBot(userId, sock);
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect, qr, isNewLogin } = update;
     const instance = instances.get(userId);
     if (!instance) return;
+
+    console.log(`[User ${userId}] 📡 Connection update: connection=${connection}, qr=${!!qr}, isNewLogin=${isNewLogin}`);
 
     if (qr) {
       instance.qr = qr;
       instance.pairingCode = null;
-      console.log(`[User ${userId}] QR generado`);
+      console.log(`[User ${userId}] 🖼️ QR generado`);
     }
 
     if (connection === 'open') {
       instance.isConnected = true;
       instance.qr = null;
       instance.pairingCode = null;
-      console.log(`[User ${userId}] Conectado a WhatsApp`);
+      console.log(`[User ${userId}] ✅ Conectado a WhatsApp`);
 
       const settings = await getSettings(userId);
       if (!settings) {
+        console.log(`[User ${userId}] 📝 Creando configuración por defecto`);
         const defaultSettings = {
           autoReply: { active: false, text: 'Estoy fuera de servicio', startHour: 23, endHour: 8 },
           tasks: [],
@@ -71,17 +76,18 @@ async function startUserInstance(userId, phoneNumber) {
     }
 
     if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect?.error instanceof Boom) &&
-                              lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut;
-
-      console.log(`[User ${userId}] Conexión cerrada. Reconectar: ${shouldReconnect}`);
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      
+      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
       instance.isConnected = false;
 
       if (shouldReconnect) {
+        console.log(`[User ${userId}] 🔄 Reintentando en 10s...`);
         await delay(10000);
         startUserInstance(userId, cleanPhone);
-      } else if (lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut) {
-        console.log(`[User ${userId}] Sesión cerrada. Eliminando credenciales.`);
+      } else if (statusCode === DisconnectReason.loggedOut) {
+        console.log(`[User ${userId}] 🗑️ Sesión cerrada (loggedOut). Eliminando credenciales.`);
         await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
         startUserInstance(userId, cleanPhone);
       }
@@ -90,16 +96,20 @@ async function startUserInstance(userId, phoneNumber) {
     if (connection === 'connecting' && !qr && cleanPhone) {
       try {
         await delay(5000);
+        console.log(`[User ${userId}] 🔢 Solicitando código de emparejamiento para ${cleanPhone}...`);
         const code = await sock.requestPairingCode(cleanPhone);
         instance.pairingCode = code;
-        console.log(`[User ${userId}] Código de emparejamiento: ${code?.match(/.{1,4}/g)?.join('-')}`);
+        console.log(`[User ${userId}] 🔢 Código generado: ${code?.match(/.{1,4}/g)?.join('-')}`);
       } catch (err) {
-        console.error(`[User ${userId}] Error solicitando código:`, err.message);
+        console.error(`[User ${userId}] ❌ Error solicitando código:`, err);
       }
     }
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', (creds) => {
+    console.log(`[User ${userId}] 💾 Credenciales actualizadas`);
+    saveCreds();
+  });
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     await userBot.handleMessages(messages);
@@ -172,7 +182,6 @@ async function getGroupsForUser(userId) {
   }
 }
 
-// NUEVA FUNCIÓN: Limpiar sesión de WhatsApp para un usuario
 async function clearUserSession(userId) {
   const instance = instances.get(userId);
   if (instance) {
@@ -181,7 +190,6 @@ async function clearUserSession(userId) {
     } catch (e) {}
     await stopUserInstance(userId);
   }
-  // Borrar credenciales de Supabase
   await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
   console.log(`[User ${userId}] Sesión eliminada completamente.`);
   return true;
