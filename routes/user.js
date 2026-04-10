@@ -125,29 +125,31 @@ router.post('/restart', async (req, res) => {
   res.json({ success: true });
 });
 
-// NUEVO: Limpiar sesión por completo
 router.post('/clear-session', async (req, res) => {
   await clearUserSession(req.user.id);
   res.json({ success: true, message: 'Sesión eliminada. Reinicia la conexión.' });
 });
 
-// NUEVO: Solicitar código manualmente
 router.post('/request-pairing-code', async (req, res) => {
   const userId = req.user.id;
+  console.log(`[API] ${userId} solicitando código manualmente`);
   const instance = require('../core/manager').instances.get(userId);
   
   if (!instance) {
+    console.log(`[API] ${userId} - Instancia no encontrada`);
     return res.status(400).json({ error: 'Instancia no iniciada. Usa /restart primero.' });
   }
 
   const phoneNumber = String(req.profile.phone_number).replace(/\D/g, '');
+  console.log(`[API] ${userId} - Teléfono limpio: ${phoneNumber}`);
   try {
+    console.log(`[API] ${userId} - Llamando a sock.requestPairingCode...`);
     const code = await instance.sock.requestPairingCode(phoneNumber);
     instance.pairingCode = code;
-    console.log(`[User ${userId}] Código solicitado manualmente: ${code?.match(/.{1,4}/g)?.join('-')}`);
+    console.log(`[API] ${userId} - Código obtenido: ${code}`);
     res.json({ success: true, code });
   } catch (err) {
-    console.error(`[User ${userId}] Error solicitando código:`, err.message);
+    console.error(`[API] ${userId} - Error:`, err);
     res.status(500).json({ error: err.message });
   }
 });
