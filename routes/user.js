@@ -125,6 +125,27 @@ router.post('/restart', async (req, res) => {
   res.json({ success: true });
 });
 
+// NUEVO: Forzar código de emparejamiento
+router.post('/request-pairing-code', async (req, res) => {
+  const userId = req.user.id;
+  const instance = require('../core/manager').instances.get(userId);
+  
+  if (!instance) {
+    return res.status(400).json({ error: 'Instancia no iniciada. Usa /restart primero.' });
+  }
+
+  const phoneNumber = req.profile.phone_number;
+  try {
+    const code = await instance.sock.requestPairingCode(phoneNumber);
+    instance.pairingCode = code;
+    console.log(`[User ${userId}] Código solicitado manualmente: ${code?.match(/.{1,4}/g)?.join('-')}`);
+    res.json({ success: true, code });
+  } catch (err) {
+    console.error(`[User ${userId}] Error solicitando código:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -------------------- GRUPOS --------------------
 router.get('/groups', async (req, res) => {
   const groups = await getGroupsForUser(req.user.id);
