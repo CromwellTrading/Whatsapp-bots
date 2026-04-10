@@ -10,6 +10,7 @@
     #logout { float: right; }
     textarea { width: 100%; }
     .error { color: red; background: #f8d7da; padding: 10px; border-radius: 5px; }
+    .info { color: blue; background: #d4edda; padding: 10px; border-radius: 5px; }
     #loading { text-align: center; padding: 50px; }
     .tab-bar { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 20px; }
     .tab { padding: 10px 20px; cursor: pointer; background: #f0f0f0; border: none; }
@@ -121,6 +122,7 @@
     </div>
 
     <div id="errorMessage" class="error" style="display:none;"></div>
+    <div id="infoMessage" class="info" style="display:none;"></div>
   </div>
 
   <!-- Modal Tarea/Estado -->
@@ -181,19 +183,31 @@
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
+    // ---------- CONFIGURACIÓN INICIAL ----------
     const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
     let token = localStorage.getItem('sb-token');
     let currentProfile = null;
     let groupsCache = [];
     let manualPairingCode = null;
 
+    // ---------- FUNCIONES AUXILIARES ----------
     function showError(msg) {
       const el = document.getElementById('errorMessage');
       el.textContent = '❌ ' + msg;
       el.style.display = 'block';
       setTimeout(() => el.style.display = 'none', 5000);
+      console.error('❌', msg);
     }
 
+    function showInfo(msg) {
+      const el = document.getElementById('infoMessage');
+      el.textContent = 'ℹ️ ' + msg;
+      el.style.display = 'block';
+      setTimeout(() => el.style.display = 'none', 3000);
+      console.log('ℹ️', msg);
+    }
+
+    // API Helper con manejo automático de 401
     async function apiCall(endpoint, method='GET', body=null) {
       const res = await fetch(`/api/user${endpoint}`, {
         method,
@@ -203,6 +217,15 @@
         },
         body: body ? JSON.stringify(body) : null
       });
+      
+      if (res.status === 401) {
+        console.warn('🔐 Token inválido o expirado. Redirigiendo al login...');
+        localStorage.removeItem('sb-token');
+        showInfo('Tu sesión ha expirado. Por favor, inicia sesión de nuevo.');
+        setTimeout(() => window.location.href = '/login.html', 2000);
+        throw new Error('Sesión expirada');
+      }
+      
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Error en la solicitud');
@@ -218,27 +241,60 @@
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData
       });
+      if (res.status === 401) {
+        localStorage.removeItem('sb-token');
+        window.location.href = '/login.html';
+        throw new Error('Sesión expirada');
+      }
       if (!res.ok) throw new Error('Error al subir imagen');
       const data = await res.json();
       return data.url;
     }
 
+    // ---------- INICIALIZACIÓN ----------
     async function main() {
       const loadingDiv = document.getElementById('loading');
       try {
-        if (!token) throw new Error('No hay sesión');
+        if (!token) {
+          showInfo('No hay sesión activa. Redirigiendo...');
+          setTimeout(() => window.location.href = '/login.html', 1500);
+          return;
+        }
         
+        console.log('🔑 Verificando token con Supabase...');
         const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (error || !user) throw new Error('Sesión inválida');
+        if (error || !user) {
+          console.warn('Token inválido:', error);
+          localStorage.removeItem('sb-token');
+          showInfo('Sesión inválida. Inicia sesión de nuevo.');
+          setTimeout(() => window.location.href = '/login.html', 2000);
+          return;
+        }
         
+        console.log('👤 Obteniendo perfil...');
         const profileRes = await fetch('/api/user/profile', { headers: { 'Authorization': `Bearer ${token}` } });
-        if (!profileRes.ok) throw new Error('Perfil no encontrado');
+        if (profileRes.status === 401) {
+          localStorage.removeItem('sb-token');
+          showInfo('Sesión expirada. Inicia sesión de nuevo.');
+          setTimeout(() => window.location.href = '/login.html', 2000);
+          return;
+        }
+        if (!profileRes.ok) throw new Error('Error al cargar perfil');
         currentProfile = await profileRes.json();
+        console.log('✅ Perfil cargado:', currentProfile);
         
         if (!currentProfile.is_approved) {
           loadingDiv.style.display = 'none';
-          document.body.innerHTML = `<div style="max-width:600px;margin:50px auto;text-align:center"><h1>⏳ Cuenta pendiente de aprobación</h1><button id="logoutPending">Cerrar Sesión</button></div>`;
-          document.getElementById('logoutPending').onclick = () => { localStorage.removeItem('sb-token'); location.href='/login.html'; };
+          document.body.innerHTML = `
+            <div style="max-width:600px;margin:50px auto;text-align:center">
+              <h1>⏳ Cuenta pendiente de aprobación</h1>
+              <button id="logoutPending">Cerrar Sesión</button>
+            </div>
+          `;
+          document.getElementById('logoutPending').onclick = () => {
+            localStorage.removeItem('sb-token');
+            window.location.href = '/login.html';
+          };
           return;
         }
         
@@ -257,9 +313,10 @@
         await loadSettings();
         setInterval(loadStatus, 30000);
       } catch (error) {
+        console.error('❌ Error en main():', error);
         loadingDiv.innerHTML = `❌ ${error.message}<br>Redirigiendo...`;
         localStorage.removeItem('sb-token');
-        setTimeout(() => location.href='/login.html', 2000);
+        setTimeout(() => window.location.href = '/login.html', 2000);
       }
     }
 
@@ -278,7 +335,7 @@
       
       document.getElementById('logout').onclick = () => {
         localStorage.removeItem('sb-token');
-        location.href = '/login.html';
+        window.location.href = '/login.html';
       };
       document.getElementById('refreshStatus').onclick = loadStatus;
       document.getElementById('restartBot').onclick = restartBot;
@@ -299,7 +356,6 @@
       document.getElementById('taskImage').onchange = previewTaskImage;
       document.getElementById('autoReplyImage').onchange = previewAutoReplyImage;
       
-      // Cerrar modal QR al hacer clic fuera
       document.getElementById('qrModal').onclick = (e) => {
         if (e.target === document.getElementById('qrModal')) {
           document.getElementById('qrModal').style.display = 'none';
@@ -307,6 +363,7 @@
       };
     }
 
+    // ---------- FUNCIONES DE ESTADO Y CONEXIÓN ----------
     async function loadStatus() {
       try {
         const res = await apiCall('/status');
@@ -320,7 +377,7 @@
           document.getElementById('showQrModalBtn').style.display = 'none';
         } else if (data.qrAvailable) {
           statusEl.textContent = '🟡 QR disponible - Escanea para vincular';
-          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px; border:1px solid #ccc; padding:5px;"/>';
+          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px;"/>';
           document.getElementById('codeContainer').innerHTML = '';
           document.getElementById('showQrModalBtn').style.display = 'inline-block';
         } else if (data.pairingCode || manualPairingCode) {
@@ -329,8 +386,8 @@
           const code = data.pairingCode || manualPairingCode;
           if (code) {
             document.getElementById('codeContainer').innerHTML = `
-              <p>🔢 Código de 8 dígitos: <strong style="font-size:1.6em;">${code.match(/.{1,4}/g).join('-')}</strong></p>
-              <p style="color:green;">✔️ Ingresa este código en WhatsApp (Dispositivos vinculados)</p>
+              <p>🔢 Código: <strong style="font-size:1.6em;">${code.match(/.{1,4}/g).join('-')}</strong></p>
+              <p style="color:green;">✔️ Ingresa este código en WhatsApp</p>
             `;
           }
           document.getElementById('showQrModalBtn').style.display = 'none';
@@ -346,7 +403,7 @@
     }
 
     async function showQrCode() {
-      await restartBot(); // Reinicia y genera QR
+      await restartBot();
     }
 
     async function requestPairingCode() {
@@ -366,14 +423,14 @@
         }, 3000);
         
         document.getElementById('codeContainer').innerHTML = `
-          <p>🔢 Código de 8 dígitos: <strong style="font-size:1.6em;">${data.code.match(/.{1,4}/g).join('-')}</strong></p>
-          <p style="color:green;">✔️ Ya puedes ingresarlo en WhatsApp (Dispositivos vinculados > Vincular con código)</p>
+          <p>🔢 Código: <strong style="font-size:1.6em;">${data.code.match(/.{1,4}/g).join('-')}</strong></p>
+          <p style="color:green;">✔️ Ingresa este código en WhatsApp</p>
         `;
         document.getElementById('qrContainer').innerHTML = '';
-        document.getElementById('statusText').textContent = '🟡 Esperando vinculación con código...';
+        document.getElementById('statusText').textContent = '🟡 Esperando vinculación...';
         document.getElementById('showQrModalBtn').style.display = 'none';
       } catch (e) {
-        showError('Error al solicitar código: ' + e.message);
+        showError('Error: ' + e.message);
         document.getElementById('requestPairingBtn').disabled = false;
         document.getElementById('requestPairingBtn').textContent = '🔢 Vincular con Código';
       }
@@ -403,11 +460,11 @@
     }
 
     async function clearSession() {
-      if (!confirm('¿Eliminar la sesión de WhatsApp por completo? Deberás volver a vincular.')) return;
+      if (!confirm('¿Eliminar sesión por completo?')) return;
       try {
         await apiCall('/clear-session', 'POST');
         manualPairingCode = null;
-        alert('Sesión eliminada. La página se recargará.');
+        alert('Sesión eliminada. Recargando...');
         location.reload();
       } catch (e) {
         showError(e.message);
@@ -422,10 +479,279 @@
       }
     }
 
-    // ... (resto de funciones: loadSettings, saveAutoReply, loadGroupsList, loadTasks, loadStatusTasks, renderTasksTable, openTaskModal, closeModal, saveTask, editTask, deleteTask, testTask, previews, etc. - se mantienen igual que en la versión anterior)
-    // Para mantener la respuesta manejable, no repito esas funciones aquí porque ya las tienes en el historial. Si necesitas el archivo absolutamente completo con todas las funciones, pídemelo y lo pego entero.
+    // ---------- AUTO-REPLY ----------
+    async function loadSettings() {
+      const res = await apiCall('/settings');
+      const data = await res.json();
+      const ar = data.autoReply || {};
+      document.getElementById('autoReplyActive').checked = ar.active || false;
+      document.getElementById('autoReplyText').value = ar.text || '';
+      document.getElementById('startHour').value = ar.startHour ?? 23;
+      document.getElementById('endHour').value = ar.endHour ?? 8;
+      if (ar.mediaUrl) {
+        document.getElementById('autoReplyPreview').src = ar.mediaUrl;
+        document.getElementById('autoReplyPreview').style.display = 'block';
+      }
+    }
 
+    async function saveAutoReply() {
+      try {
+        const current = await (await apiCall('/settings')).json();
+        let mediaUrl = current.autoReply?.mediaUrl;
+        const imageFile = document.getElementById('autoReplyImage').files[0];
+        if (imageFile) mediaUrl = await uploadImage(imageFile);
+        
+        const settings = {
+          autoReply: {
+            active: document.getElementById('autoReplyActive').checked,
+            text: document.getElementById('autoReplyText').value,
+            startHour: parseInt(document.getElementById('startHour').value),
+            endHour: parseInt(document.getElementById('endHour').value),
+            mediaUrl
+          },
+          tasks: current.tasks || [],
+          statusTasks: current.statusTasks || []
+        };
+        await apiCall('/settings', 'POST', settings);
+        alert('✅ Configuración guardada');
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    function previewAutoReplyImage() {
+      const file = document.getElementById('autoReplyImage').files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = e => {
+          document.getElementById('autoReplyPreview').src = e.target.result;
+          document.getElementById('autoReplyPreview').style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    // ---------- GRUPOS ----------
+    async function loadGroupsList() {
+      try {
+        const res = await apiCall('/groups');
+        groupsCache = await res.json();
+        const html = groupsCache.map(g => `<p><strong>${g.name}</strong> (${g.id})</p>`).join('');
+        document.getElementById('groupsList').innerHTML = html || '<p>No se encontraron grupos</p>';
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function populateGroupSelect() {
+      if (groupsCache.length === 0) {
+        try {
+          const res = await apiCall('/groups');
+          groupsCache = await res.json();
+        } catch (e) {
+          return;
+        }
+      }
+      const select = document.getElementById('taskGroupSelect');
+      select.innerHTML = groupsCache.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+    }
+
+    // ---------- TAREAS Y ESTADOS ----------
+    async function loadTasks() {
+      const res = await apiCall('/tasks');
+      const tasks = await res.json();
+      renderTasksTable(tasks, 'tasks');
+    }
+
+    async function loadStatusTasks() {
+      const res = await apiCall('/status-tasks');
+      const tasks = await res.json();
+      renderTasksTable(tasks, 'status');
+    }
+
+    function renderTasksTable(tasks, type) {
+      const tbody = document.querySelector(`#${type === 'tasks' ? 'tasksTable' : 'statusTasksTable'} tbody`);
+      tbody.innerHTML = '';
+      tasks.forEach(task => {
+        const tr = document.createElement('tr');
+        const schedule = task.scheduleType === 'cron' 
+          ? `${task.cronExpression || '0 0 * * *'}`
+          : `Cada ${task.intervalMinutes} min`;
+        tr.innerHTML = `
+          <td>${task.name || 'Sin nombre'}</td>
+          <td>${type === 'tasks' ? (task.target.includes('@g.us') ? 'Grupo' : 'Privado') : 'Estado'}</td>
+          <td>${task.mediaUrl ? '📷 Imagen' : '📝 Texto'}</td>
+          <td>${schedule}</td>
+          <td>${task.active ? '✅' : '❌'}</td>
+          <td>
+            <button class="test-btn" data-id="${task.id}" data-type="${type}">🧪 Probar</button>
+            <button class="edit-btn" data-id="${task.id}" data-type="${type}">✏️</button>
+            <button class="delete-btn" data-id="${task.id}" data-type="${type}">🗑️</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+      
+      document.querySelectorAll('.test-btn').forEach(b => b.addEventListener('click', testTask));
+      document.querySelectorAll('.edit-btn').forEach(b => b.addEventListener('click', editTask));
+      document.querySelectorAll('.delete-btn').forEach(b => b.addEventListener('click', deleteTask));
+    }
+
+    function openTaskModal(type = 'task', task = null) {
+      document.getElementById('modalTitle').textContent = task ? 'Editar' : 'Nueva ' + (type === 'task' ? 'Tarea' : 'Estado');
+      document.getElementById('taskType').value = type;
+      document.getElementById('taskId').value = task?.id || '';
+      
+      const targetSection = document.getElementById('targetSection');
+      targetSection.style.display = type === 'task' ? 'block' : 'none';
+      
+      if (task) {
+        document.getElementById('taskName').value = task.name || '';
+        document.getElementById('taskMessage').value = task.message || '';
+        if (task.mediaUrl) {
+          document.getElementById('taskImagePreview').src = task.mediaUrl;
+          document.getElementById('taskImagePreview').style.display = 'block';
+        }
+        document.getElementById('taskScheduleType').value = task.scheduleType || 'cron';
+        if (task.scheduleType === 'cron') {
+          const [min, hour] = (task.cronExpression || '0 0').split(' ');
+          document.getElementById('taskHour').value = hour || 0;
+          document.getElementById('taskMinute').value = min || 0;
+        } else {
+          document.getElementById('taskInterval').value = task.intervalMinutes || 60;
+        }
+        document.getElementById('taskActive').checked = task.active !== false;
+        
+        if (type === 'task') {
+          if (task.target.includes('@g.us')) {
+            document.getElementById('taskTargetType').value = 'group';
+            document.getElementById('privateTargetDiv').style.display = 'none';
+            document.getElementById('groupTargetDiv').style.display = 'block';
+            populateGroupSelect().then(() => {
+              document.getElementById('taskGroupSelect').value = task.target;
+            });
+          } else {
+            document.getElementById('taskTargetType').value = 'private';
+            document.getElementById('taskPrivateNumber').value = task.target.replace('@s.whatsapp.net', '');
+          }
+        }
+      } else {
+        document.getElementById('taskForm').reset();
+        document.getElementById('taskImagePreview').style.display = 'none';
+        document.getElementById('taskScheduleType').value = 'cron';
+        document.getElementById('taskActive').checked = true;
+        if (type === 'task') {
+          document.getElementById('taskTargetType').value = 'private';
+          toggleTargetType();
+        }
+      }
+      toggleScheduleType();
+      document.getElementById('taskModal').style.display = 'block';
+    }
+
+    function closeModal() {
+      document.getElementById('taskModal').style.display = 'none';
+    }
+
+    function toggleTargetType() {
+      const type = document.getElementById('taskTargetType').value;
+      document.getElementById('privateTargetDiv').style.display = type === 'private' ? 'block' : 'none';
+      document.getElementById('groupTargetDiv').style.display = type === 'group' ? 'block' : 'none';
+      if (type === 'group') populateGroupSelect();
+    }
+
+    function toggleScheduleType() {
+      const type = document.getElementById('taskScheduleType').value;
+      document.getElementById('cronDiv').style.display = type === 'cron' ? 'block' : 'none';
+      document.getElementById('intervalDiv').style.display = type === 'interval' ? 'block' : 'none';
+    }
+
+    function previewTaskImage() {
+      const file = document.getElementById('taskImage').files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = e => {
+          document.getElementById('taskImagePreview').src = e.target.result;
+          document.getElementById('taskImagePreview').style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    async function saveTask(e) {
+      e.preventDefault();
+      const type = document.getElementById('taskType').value;
+      const id = document.getElementById('taskId').value;
+      const name = document.getElementById('taskName').value;
+      const message = document.getElementById('taskMessage').value;
+      const scheduleType = document.getElementById('taskScheduleType').value;
+      const active = document.getElementById('taskActive').checked;
+      
+      let target;
+      if (type === 'task') {
+        const targetType = document.getElementById('taskTargetType').value;
+        target = targetType === 'private' 
+          ? document.getElementById('taskPrivateNumber').value + '@s.whatsapp.net'
+          : document.getElementById('taskGroupSelect').value;
+      } else {
+        target = 'status@broadcast';
+      }
+      
+      let cronExpression = null, intervalMinutes = null;
+      if (scheduleType === 'cron') {
+        const hour = document.getElementById('taskHour').value.padStart(2, '0');
+        const minute = document.getElementById('taskMinute').value.padStart(2, '0');
+        cronExpression = `${minute} ${hour} * * *`;
+      } else {
+        intervalMinutes = parseInt(document.getElementById('taskInterval').value);
+      }
+      
+      let mediaUrl = document.getElementById('taskImagePreview').style.display === 'block' 
+        ? document.getElementById('taskImagePreview').src : null;
+      const imageFile = document.getElementById('taskImage').files[0];
+      if (imageFile) mediaUrl = await uploadImage(imageFile);
+      
+      const task = { id, name, target, message, mediaUrl, scheduleType, cronExpression, intervalMinutes, active };
+      
+      const endpoint = type === 'task' ? '/tasks' : '/status-tasks';
+      await apiCall(endpoint, 'POST', { task });
+      closeModal();
+      if (type === 'task') loadTasks(); else loadStatusTasks();
+    }
+
+    async function editTask(e) {
+      const id = e.target.dataset.id;
+      const type = e.target.dataset.type;
+      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
+      const res = await apiCall(endpoint);
+      const tasks = await res.json();
+      const task = tasks.find(t => t.id === id);
+      if (task) openTaskModal(type === 'tasks' ? 'task' : 'status', task);
+    }
+
+    async function deleteTask(e) {
+      if (!confirm('¿Eliminar?')) return;
+      const id = e.target.dataset.id;
+      const type = e.target.dataset.type;
+      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
+      await apiCall(`${endpoint}/${id}`, 'DELETE');
+      if (type === 'tasks') loadTasks(); else loadStatusTasks();
+    }
+
+    async function testTask(e) {
+      const id = e.target.dataset.id;
+      const type = e.target.dataset.type;
+      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
+      try {
+        await apiCall(`${endpoint}/${id}/test`, 'POST');
+        alert('✅ Mensaje enviado correctamente');
+      } catch (error) {
+        showError('Error al probar: ' + error.message);
+      }
+    }
+
+    // Iniciar
     main();
   </script>
 </body>
-  </html>
+</html>
