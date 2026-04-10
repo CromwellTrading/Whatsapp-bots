@@ -1,257 +1,134 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Mi Panel - WhatsApp Bot</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body { font-family: Arial; max-width: 900px; margin: 20px auto; padding: 20px; }
-    .card { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; }
-    button { padding: 8px 16px; margin-right: 10px; cursor: pointer; }
-    #logout { float: right; }
-    textarea { width: 100%; }
-    .error { color: red; background: #f8d7da; padding: 10px; border-radius: 5px; }
-    #loading { text-align: center; padding: 50px; }
-  </style>
-</head>
-<body>
-  <div id="loading">⏳ Verificando sesión...</div>
+const express = require('express');
+const router = express.Router();
+const multer = require('multer');
+const { supabase, supabaseAdmin } = require('../auth/supabase');
+const { getUserStatus, startUserInstance } = require('../core/manager');
+const { getSettings, saveSettings } = require('../utils/db');
 
-  <div id="mainPanel" style="display:none;">
-    <button id="logout">Cerrar Sesión</button>
-    <h1>🤖 Mi Panel de Control</h1>
+// -------------------- MIDDLEWARES --------------------
+async function authMiddleware(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No autorizado' });
 
-    <div class="card">
-      <h2>📡 Estado de Conexión</h2>
-      <p>Estado: <span id="statusText">Cargando...</span></p>
-      <p>Número vinculado: <strong><span id="phoneDisplay"></span></strong></p>
-      <div id="qrContainer" style="text-align:center;"></div>
-      <div id="codeContainer" style="font-size:1.2em;margin:10px 0;"></div>
-      <button id="refreshStatus">🔄 Actualizar</button>
-      <button id="restartBot">⚠️ Reiniciar Conexión</button>
-    </div>
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error) return res.status(401).json({ error: 'Token inválido' });
 
-    <div class="card">
-      <h2>💬 Auto-Reply</h2>
-      <label><input type="checkbox" id="autoReplyActive"> Activar respuesta automática</label><br><br>
-      <label>Mensaje:<br><textarea id="autoReplyText" rows="3"></textarea></label><br><br>
-      <label>Hora inicio (0-23): <input type="number" id="startHour" min="0" max="23"></label>
-      <label>Hora fin (0-23): <input type="number" id="endHour" min="0" max="23"></label><br><br>
-      <button id="saveSettings">💾 Guardar Configuración</button>
-    </div>
+  req.user = user;
+  next();
+}
 
-    <div id="errorMessage" class="error" style="display:none;"></div>
-  </div>
+async function approvalMiddleware(req, res, next) {
+  const { data: profile, error } = await supabaseAdmin
+    .from('profiles')
+    .select('is_approved, phone_number, is_admin')
+    .eq('id', req.user.id)
+    .single();
 
-  <script src="/config.js"></script>
-  <script type="module">
-    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+  if (error || !profile) {
+    return res.status(401).json({ error: 'Perfil no encontrado' });
+  }
 
-    function showError(msg) {
-      const el = document.getElementById('errorMessage');
-      if (el) {
-        el.textContent = '❌ ' + msg;
-        el.style.display = 'block';
-      }
-      console.error(msg);
-    }
+  if (!profile.is_approved) {
+    return res.status(403).json({ error: 'Cuenta pendiente de aprobación' });
+  }
 
-    async function main() {
-      const loadingDiv = document.getElementById('loading');
-      
-      try {
-        if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
-          throw new Error('Configuración de Supabase no cargada');
-        }
+  req.profile = profile;
+  next();
+}
 
-        const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-        
-        let token = localStorage.getItem('sb-token');
-        if (!token) {
-          loadingDiv.innerHTML = 'No hay sesión activa. Redirigiendo al login...';
-          setTimeout(() => window.location.href = '/login.html', 1500);
-          return;
-        }
+// -------------------- RUTAS --------------------
 
-        loadingDiv.innerHTML = '🔑 Verificando token...';
-        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({ 
-          access_token: token, 
-          refresh_token: '' 
-        });
-        
-        if (sessionError) {
-          console.warn('Token inválido, eliminando...');
-          localStorage.removeItem('sb-token');
-          loadingDiv.innerHTML = 'Sesión expirada. Redirigiendo al login...';
-          setTimeout(() => window.location.href = '/login.html', 1500);
-          return;
-        }
+// Endpoint público (solo autenticación, no aprobación)
+router.get('/profile', authMiddleware, async (req, res) => {
+  const { data: profile, error } = await supabaseAdmin
+    .from('profiles')
+    .select('is_approved, phone_number, is_admin')
+    .eq('id', req.user.id)
+    .single();
 
-        loadingDiv.innerHTML = '👤 Cargando perfil...';
-        let profile;
-        try {
-          const profileRes = await fetch('/api/user/profile', {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          
-          if (!profileRes.ok) {
-            if (profileRes.status === 401) {
-              localStorage.removeItem('sb-token');
-              loadingDiv.innerHTML = 'Sesión no autorizada. Redirigiendo...';
-              setTimeout(() => window.location.href = '/login.html', 1500);
-              return;
-            }
-            const err = await profileRes.json();
-            throw new Error(err.error || 'Error al obtener perfil');
-          }
-          profile = await profileRes.json();
-        } catch (profileError) {
-          console.error('Error cargando perfil:', profileError);
-          loadingDiv.innerHTML = `❌ ${profileError.message}<br>Redirigiendo al login...`;
-          localStorage.removeItem('sb-token');
-          setTimeout(() => window.location.href = '/login.html', 2000);
-          return;
-        }
+  if (error) {
+    console.error('❌ Error al obtener perfil:', error.message);
+    return res.status(500).json({ error: error.message });
+  }
 
-        // Perfil cargado correctamente
-        if (profile.is_admin) {
-          const adminLink = document.createElement('div');
-          adminLink.innerHTML = '<p>🔧 Eres administrador. <a href="/admin.html">Ir al panel de administración</a></p>';
-          document.getElementById('mainPanel').insertBefore(adminLink, document.getElementById('mainPanel').firstChild);
-        }
+  res.json(profile);
+});
 
-        if (!profile.is_approved) {
-          loadingDiv.style.display = 'none';
-          document.body.innerHTML = `
-            <div style="max-width:600px;margin:50px auto;text-align:center;border:1px solid #ffc107;padding:30px;border-radius:8px;background:#fff3cd;">
-              <h1>⏳ Cuenta pendiente de aprobación</h1>
-              <p>Tu registro ha sido exitoso, pero necesitas que el administrador apruebe tu cuenta.</p>
-              <button id="logoutPending">Cerrar Sesión</button>
-            </div>
-          `;
-          document.getElementById('logoutPending').onclick = () => {
-            localStorage.removeItem('sb-token');
-            window.location.href = '/login.html';
-          };
-          return;
-        }
+// Middleware de aprobación para el resto de rutas
+router.use(approvalMiddleware);
 
-        // Todo OK, mostrar panel
-        loadingDiv.style.display = 'none';
-        document.getElementById('mainPanel').style.display = 'block';
-        document.getElementById('phoneDisplay').textContent = profile.phone_number || 'No definido';
+router.get('/status', async (req, res) => {
+  const status = getUserStatus(req.user.id);
+  if (!status) {
+    return res.json({ connected: false, qrAvailable: false, message: 'Instancia no iniciada' });
+  }
+  res.json({
+    connected: status.connected,
+    qrAvailable: !!status.qr,
+    pairingCode: status.pairingCode,
+    phoneNumber: status.phoneNumber
+  });
+});
 
-        // API Helper
-        async function apiCall(endpoint, method='GET', body=null) {
-          const res = await fetch(`/api/user${endpoint}`, {
-            method,
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: body ? JSON.stringify(body) : null
-          });
-          if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Error en la solicitud');
-          }
-          return res;
-        }
+router.get('/qr', async (req, res) => {
+  const status = getUserStatus(req.user.id);
+  if (!status || !status.qr) {
+    return res.status(404).send('QR no disponible');
+  }
+  const QRCode = require('qrcode');
+  const qrImage = await QRCode.toDataURL(status.qr);
+  res.send(`<img src="${qrImage}" alt="QR Code" />`);
+});
 
-        async function loadStatus() {
-          try {
-            const res = await apiCall('/status');
-            const data = await res.json();
-            const statusEl = document.getElementById('statusText');
+router.get('/pairing-code', (req, res) => {
+  const status = getUserStatus(req.user.id);
+  if (!status || !status.pairingCode) {
+    return res.status(404).json({ error: 'Código no disponible' });
+  }
+  res.json({ code: status.pairingCode.match(/.{1,4}/g)?.join('-') || status.pairingCode });
+});
 
-            if (data.connected) {
-              statusEl.textContent = '🟢 Conectado';
-            } else if (data.qrAvailable) {
-              statusEl.textContent = '🟡 Esperando escaneo QR';
-            } else {
-              statusEl.textContent = '🔴 Desconectado';
-            }
+router.get('/settings', async (req, res) => {
+  const settings = await getSettings(req.user.id);
+  res.json(settings || { autoReply: { active: false }, tasks: [] });
+});
 
-            if (data.qrAvailable) {
-              document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px;"/>';
-              document.getElementById('codeContainer').innerHTML = '';
-            } else if (data.pairingCode) {
-              document.getElementById('qrContainer').innerHTML = '';
-              document.getElementById('codeContainer').innerHTML = `<p>🔢 Código: <strong>${data.pairingCode}</strong></p>`;
-            } else {
-              document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible.</p>';
-              document.getElementById('codeContainer').innerHTML = '';
-            }
-          } catch (e) {
-            showError('Error al cargar estado: ' + e.message);
-          }
-        }
+router.post('/settings', async (req, res) => {
+  try {
+    await saveSettings(req.user.id, req.body);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-        async function loadSettings() {
-          try {
-            const res = await apiCall('/settings');
-            const data = await res.json();
-            document.getElementById('autoReplyActive').checked = data.autoReply?.active || false;
-            document.getElementById('autoReplyText').value = data.autoReply?.text || '';
-            document.getElementById('startHour').value = data.autoReply?.startHour ?? 23;
-            document.getElementById('endHour').value = data.autoReply?.endHour ?? 8;
-          } catch (e) {
-            showError('Error al cargar configuración: ' + e.message);
-          }
-        }
+const upload = multer({ storage: multer.memoryStorage() });
+router.post('/upload', upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No se envió imagen' });
 
-        async function saveSettings() {
-          try {
-            const currentSettings = await (await apiCall('/settings')).json();
-            const settings = {
-              autoReply: {
-                active: document.getElementById('autoReplyActive').checked,
-                text: document.getElementById('autoReplyText').value,
-                startHour: parseInt(document.getElementById('startHour').value),
-                endHour: parseInt(document.getElementById('endHour').value)
-              },
-              tasks: currentSettings.tasks || []
-            };
-            await apiCall('/settings', 'POST', settings);
-            alert('✅ Configuración guardada');
-          } catch (e) {
-            showError('Error al guardar: ' + e.message);
-          }
-        }
+  const fileExt = req.file.originalname.split('.').pop();
+  const fileName = `${req.user.id}/${Date.now()}.${fileExt}`;
 
-        async function restartBot() {
-          if (!confirm('¿Reiniciar conexión WhatsApp?')) return;
-          try {
-            await apiCall('/restart', 'POST');
-            alert('Reiniciando... Espera unos segundos.');
-            setTimeout(loadStatus, 5000);
-          } catch (e) {
-            showError('Error al reiniciar: ' + e.message);
-          }
-        }
+  const { data, error } = await supabaseAdmin.storage
+    .from('media')
+    .upload(fileName, req.file.buffer, {
+      contentType: req.file.mimetype,
+      upsert: false
+    });
 
-        function logout() {
-          localStorage.removeItem('sb-token');
-          window.location.href = '/login.html';
-        }
+  if (error) return res.status(500).json({ error: error.message });
 
-        document.getElementById('refreshStatus').onclick = loadStatus;
-        document.getElementById('saveSettings').onclick = saveSettings;
-        document.getElementById('restartBot').onclick = restartBot;
-        document.getElementById('logout').onclick = logout;
+  const { data: { publicUrl } } = supabaseAdmin.storage
+    .from('media')
+    .getPublicUrl(fileName);
 
-        loadStatus();
-        loadSettings();
-        setInterval(loadStatus, 30000);
+  res.json({ url: publicUrl });
+});
 
-      } catch (error) {
-        loadingDiv.innerHTML = `❌ Error inesperado: ${error.message}<br>Redirigiendo...`;
-        console.error(error);
-        localStorage.removeItem('sb-token');
-        setTimeout(() => window.location.href = '/login.html', 2000);
-      }
-    }
+router.post('/restart', async (req, res) => {
+  const { phone_number } = req.profile;
+  await startUserInstance(req.user.id, phone_number);
+  res.json({ success: true });
+});
 
-    main();
-  </script>
-</body>
-</html>
+module.exports = router;
