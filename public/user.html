@@ -162,6 +162,7 @@
     let token = localStorage.getItem('sb-token');
     let currentProfile = null;
     let groupsCache = [];
+    let manualPairingCode = null;
 
     function showError(msg) {
       const el = document.getElementById('errorMessage');
@@ -282,26 +283,30 @@
         if (data.connected) {
           statusEl.textContent = '🟢 Conectado';
           document.getElementById('requestPairingBtn').style.display = 'none';
+          document.getElementById('qrContainer').innerHTML = '';
+          document.getElementById('codeContainer').innerHTML = '';
         } else if (data.qrAvailable) {
           statusEl.textContent = '🟡 Esperando escaneo QR';
           document.getElementById('requestPairingBtn').style.display = 'inline-block';
+          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px; border:1px solid #ccc; padding:5px;"/>';
+          if (!document.getElementById('codeContainer').innerHTML.includes('Código')) {
+            document.getElementById('codeContainer').innerHTML = '';
+          }
+        } else if (data.pairingCode || manualPairingCode) {
+          statusEl.textContent = '🟡 Esperando vinculación';
+          document.getElementById('requestPairingBtn').style.display = 'inline-block';
+          document.getElementById('qrContainer').innerHTML = '';
+          const code = data.pairingCode || manualPairingCode;
+          if (code && !document.getElementById('codeContainer').innerHTML.includes('Código')) {
+            document.getElementById('codeContainer').innerHTML = `
+              <p>🔢 Código de 8 dígitos: <strong style="font-size:1.6em;">${code.match(/.{1,4}/g).join('-')}</strong></p>
+              <p style="color:green;">✔️ Ingresa este código en WhatsApp (Dispositivos vinculados)</p>
+            `;
+          }
         } else {
           statusEl.textContent = '🔴 Desconectado';
           document.getElementById('requestPairingBtn').style.display = 'inline-block';
-        }
-
-        if (data.qrAvailable) {
-          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px; border:1px solid #ccc; padding:5px;"/>';
-          document.getElementById('codeContainer').innerHTML = '';
-        } else if (data.pairingCode) {
-          document.getElementById('qrContainer').innerHTML = '';
-          document.getElementById('codeContainer').innerHTML = `
-            <p>🔢 Código de 8 dígitos: <strong style="font-size:1.6em;">${data.pairingCode}</strong></p>
-            <p style="color:green;">✔️ Ingresa este código en WhatsApp (Dispositivos vinculados)</p>
-          `;
-        } else {
           document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible. Usa el botón "Solicitar código de vinculación".</p>';
-          document.getElementById('codeContainer').innerHTML = '';
         }
       } catch (e) {
         showError('Error al cargar estado: ' + e.message);
@@ -316,6 +321,7 @@
         
         const res = await apiCall('/request-pairing-code', 'POST');
         const data = await res.json();
+        manualPairingCode = data.code;
         
         btn.textContent = '✅ Código solicitado';
         setTimeout(() => {
@@ -351,6 +357,7 @@
       if (!confirm('¿Eliminar la sesión de WhatsApp por completo? Deberás volver a vincular.')) return;
       try {
         await apiCall('/clear-session', 'POST');
+        manualPairingCode = null;
         alert('Sesión eliminada. La página se recargará.');
         location.reload();
       } catch (e) {
