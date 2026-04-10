@@ -10,7 +10,6 @@
     #logout { float: right; }
     textarea { width: 100%; }
     .error { color: red; background: #f8d7da; padding: 10px; border-radius: 5px; }
-    .success { color: green; background: #d4edda; padding: 10px; border-radius: 5px; }
     #loading { text-align: center; padding: 50px; }
     .tab-bar { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 20px; }
     .tab { padding: 10px 20px; cursor: pointer; background: #f0f0f0; border: none; }
@@ -46,8 +45,14 @@
         <h2>📡 Estado de Conexión</h2>
         <p>Estado: <span id="statusText">Cargando...</span></p>
         <p>Número vinculado: <strong><span id="phoneDisplay"></span></strong></p>
-        <div id="qrContainer" style="text-align:center;"></div>
-        <div id="codeContainer" style="font-size:1.2em;margin:10px 0;"></div>
+        
+        <button id="requestPairingBtn" style="background:#25D366; color:white; font-weight:bold; padding:10px 20px;">
+          📱 Solicitar código de vinculación
+        </button>
+        
+        <div id="qrContainer" style="text-align:center; margin:15px 0;"></div>
+        <div id="codeContainer" style="font-size:1.3em; margin:10px 0; padding:10px; background:#f0f0f0; border-radius:5px;"></div>
+        
         <button id="refreshStatus">🔄 Actualizar</button>
         <button id="restartBot">⚠️ Reiniciar Conexión</button>
       </div>
@@ -109,7 +114,7 @@
       <h3 id="modalTitle">Nueva Tarea</h3>
       <form id="taskForm">
         <input type="hidden" id="taskId">
-        <input type="hidden" id="taskType" value="task"> <!-- 'task' o 'status' -->
+        <input type="hidden" id="taskType" value="task">
         <label>Nombre: <input type="text" id="taskName" required></label><br>
         <div id="targetSection">
           <label>Destino: 
@@ -150,16 +155,13 @@
 
   <script src="/config.js"></script>
   <script type="module">
-    // === PARTE 2 DEL SCRIPT (continuación en el siguiente mensaje) ===
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-    // ---------- CONFIGURACIÓN INICIAL ----------
     const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
     let token = localStorage.getItem('sb-token');
     let currentProfile = null;
     let groupsCache = [];
 
-    // ---------- FUNCIONES AUXILIARES ----------
     function showError(msg) {
       const el = document.getElementById('errorMessage');
       el.textContent = '❌ ' + msg;
@@ -196,7 +198,6 @@
       return data.url;
     }
 
-    // ---------- INICIALIZACIÓN ----------
     async function main() {
       const loadingDiv = document.getElementById('loading');
       try {
@@ -237,9 +238,7 @@
       }
     }
 
-    // ---------- EVENTOS Y PESTAÑAS ----------
     function setupEventListeners() {
-      // Pestañas
       document.querySelectorAll('.tab').forEach(tab => {
         tab.addEventListener('click', () => {
           document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -258,6 +257,7 @@
       };
       document.getElementById('refreshStatus').onclick = loadStatus;
       document.getElementById('restartBot').onclick = restartBot;
+      document.getElementById('requestPairingBtn').onclick = requestPairingCode;
       document.getElementById('saveSettings').onclick = saveAutoReply;
       document.getElementById('loadGroups').onclick = loadGroupsList;
       document.getElementById('newTaskBtn').onclick = () => openTaskModal();
@@ -271,26 +271,66 @@
       document.getElementById('autoReplyImage').onchange = previewAutoReplyImage;
     }
 
-    // ---------- ESTADO ----------
     async function loadStatus() {
       try {
         const res = await apiCall('/status');
         const data = await res.json();
         const statusEl = document.getElementById('statusText');
-        statusEl.textContent = data.connected ? '🟢 Conectado' : (data.qrAvailable ? '🟡 Esperando QR' : '🔴 Desconectado');
-        
+
+        if (data.connected) {
+          statusEl.textContent = '🟢 Conectado';
+          document.getElementById('requestPairingBtn').style.display = 'none';
+        } else if (data.qrAvailable) {
+          statusEl.textContent = '🟡 Esperando escaneo QR';
+          document.getElementById('requestPairingBtn').style.display = 'inline-block';
+        } else {
+          statusEl.textContent = '🔴 Desconectado';
+          document.getElementById('requestPairingBtn').style.display = 'inline-block';
+        }
+
         if (data.qrAvailable) {
-          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" style="max-width:250px"/>';
+          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px; border:1px solid #ccc; padding:5px;"/>';
           document.getElementById('codeContainer').innerHTML = '';
         } else if (data.pairingCode) {
           document.getElementById('qrContainer').innerHTML = '';
-          document.getElementById('codeContainer').innerHTML = `<p>🔢 Código: <strong>${data.pairingCode}</strong></p>`;
+          document.getElementById('codeContainer').innerHTML = `
+            <p>🔢 Código de 8 dígitos: <strong style="font-size:1.6em;">${data.pairingCode}</strong></p>
+            <p style="color:green;">✔️ Ingresa este código en WhatsApp (Dispositivos vinculados)</p>
+          `;
         } else {
-          document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible</p>';
+          document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible. Usa el botón "Solicitar código de vinculación".</p>';
           document.getElementById('codeContainer').innerHTML = '';
         }
       } catch (e) {
         showError('Error al cargar estado: ' + e.message);
+      }
+    }
+
+    async function requestPairingCode() {
+      try {
+        const btn = document.getElementById('requestPairingBtn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Solicitando...';
+        
+        const res = await apiCall('/request-pairing-code', 'POST');
+        const data = await res.json();
+        
+        btn.textContent = '✅ Código solicitado';
+        setTimeout(() => {
+          btn.textContent = '📱 Solicitar código de vinculación';
+          btn.disabled = false;
+        }, 3000);
+        
+        document.getElementById('codeContainer').innerHTML = `
+          <p>🔢 Código de 8 dígitos: <strong style="font-size:1.6em;">${data.code.match(/.{1,4}/g).join('-')}</strong></p>
+          <p style="color:green;">✔️ Ya puedes ingresarlo en WhatsApp (Dispositivos vinculados > Vincular un dispositivo)</p>
+        `;
+        document.getElementById('qrContainer').innerHTML = '';
+        document.getElementById('statusText').textContent = '🟡 Esperando vinculación...';
+      } catch (e) {
+        showError('Error al solicitar código: ' + e.message);
+        document.getElementById('requestPairingBtn').disabled = false;
+        document.getElementById('requestPairingBtn').textContent = '📱 Solicitar código de vinculación';
       }
     }
 
@@ -305,7 +345,6 @@
       }
     }
 
-    // ---------- AUTO-REPLY ----------
     async function loadSettings() {
       const res = await apiCall('/settings');
       const data = await res.json();
@@ -357,7 +396,6 @@
       }
     }
 
-    // ---------- GRUPOS ----------
     async function loadGroupsList() {
       try {
         const res = await apiCall('/groups');
@@ -382,7 +420,6 @@
       select.innerHTML = groupsCache.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
     }
 
-    // ---------- TAREAS ----------
     async function loadTasks() {
       const res = await apiCall('/tasks');
       const tasks = await res.json();
@@ -428,7 +465,6 @@
       document.getElementById('taskType').value = type;
       document.getElementById('taskId').value = task?.id || '';
       
-      // Mostrar/ocultar sección de destino según tipo
       const targetSection = document.getElementById('targetSection');
       targetSection.style.display = type === 'task' ? 'block' : 'none';
       
@@ -577,8 +613,7 @@
       }
     }
 
-    // Iniciar
     main();
   </script>
 </body>
-</html>
+  </html>
