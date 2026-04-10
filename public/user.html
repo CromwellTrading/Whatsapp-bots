@@ -73,13 +73,11 @@
         }
 
         loadingDiv.innerHTML = '🔑 Verificando token...';
-        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({ 
-          access_token: token, 
-          refresh_token: '' 
-        });
         
-        if (sessionError) {
-          console.warn('Token inválido, eliminando...');
+        // Primero verificamos con Supabase directamente
+        const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+        if (userError || !user) {
+          console.warn('Token inválido según Supabase, limpiando...');
           localStorage.removeItem('sb-token');
           loadingDiv.innerHTML = 'Sesión expirada. Redirigiendo al login...';
           setTimeout(() => window.location.href = '/login.html', 1500);
