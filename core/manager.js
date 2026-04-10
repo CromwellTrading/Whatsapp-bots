@@ -54,7 +54,7 @@ async function startUserInstance(userId, phoneNumber) {
     if (qr) {
       instance.qr = qr;
       instance.pairingCode = null;
-      console.log(`[User ${userId}] 🖼️ QR generado`);
+      console.log(`[User ${userId}] 🖼️ QR generado (longitud string: ${qr.length})`);
     }
 
     if (connection === 'open') {
@@ -92,6 +92,8 @@ async function startUserInstance(userId, phoneNumber) {
         startUserInstance(userId, cleanPhone);
       }
     }
+
+    // ELIMINADO: Bloque de solicitud automática de código
   });
 
   sock.ev.on('creds.update', (creds) => {
