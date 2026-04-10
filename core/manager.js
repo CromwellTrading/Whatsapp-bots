@@ -61,7 +61,8 @@ async function startUserInstance(userId, phoneNumber) {
       if (!settings) {
         const defaultSettings = {
           autoReply: { active: false, text: 'Estoy fuera de servicio', startHour: 23, endHour: 8 },
-          tasks: []
+          tasks: [],
+          statusTasks: []
         };
         await supabaseAdmin.from('bot_settings').insert({ user_id: userId, data: defaultSettings });
       }
@@ -157,6 +158,18 @@ async function startUserIfApproved(userId) {
   return null;
 }
 
+async function getGroupsForUser(userId) {
+  const instance = instances.get(userId);
+  if (!instance || !instance.isConnected) return [];
+  try {
+    const groups = await instance.sock.groupFetchAllParticipating();
+    return Object.entries(groups).map(([id, info]) => ({ id, name: info.subject }));
+  } catch (e) {
+    console.error(`Error fetching groups for user ${userId}:`, e);
+    return [];
+  }
+}
+
 module.exports = {
   startUserInstance,
   stopUserInstance,
@@ -164,5 +177,6 @@ module.exports = {
   getAllInstances,
   initManager,
   startUserIfApproved,
+  getGroupsForUser,
   instances
 };
