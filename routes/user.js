@@ -72,8 +72,13 @@ router.get('/qr', async (req, res) => {
   const status = getUserStatus(req.user.id);
   if (!status || !status.qr) return res.status(404).send('QR no disponible');
   const QRCode = require('qrcode');
-  const qrImage = await QRCode.toDataURL(status.qr);
-  res.send(`<img src="${qrImage}" alt="QR Code" />`);
+  try {
+    const qrImage = await QRCode.toDataURL(status.qr);
+    res.send(`<img src="${qrImage}" alt="QR Code" />`);
+  } catch (err) {
+    console.error('Error generando QR:', err);
+    res.status(500).send('Error generando QR');
+  }
 });
 
 router.get('/pairing-code', (req, res) => {
@@ -130,6 +135,7 @@ router.post('/clear-session', async (req, res) => {
   res.json({ success: true, message: 'Sesión eliminada. Reinicia la conexión.' });
 });
 
+// NUEVO: Solicitar código manualmente
 router.post('/request-pairing-code', async (req, res) => {
   const userId = req.user.id;
   console.log(`[API] ${userId} solicitando código manualmente`);
