@@ -45,11 +45,11 @@ async function startUserInstance(userId, phoneNumber) {
   const userBot = createUserBot(userId, sock);
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr, isNewLogin } = update;
+    const { connection, lastDisconnect, qr } = update;
     const instance = instances.get(userId);
     if (!instance) return;
 
-    console.log(`[User ${userId}] 📡 Connection update: connection=${connection}, qr=${!!qr}, isNewLogin=${isNewLogin}`);
+    console.log(`[User ${userId}] 📡 Connection update: connection=${connection}, qr=${!!qr}`);
 
     if (qr) {
       instance.qr = qr;
@@ -90,18 +90,6 @@ async function startUserInstance(userId, phoneNumber) {
         console.log(`[User ${userId}] 🗑️ Sesión cerrada (loggedOut). Eliminando credenciales.`);
         await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
         startUserInstance(userId, cleanPhone);
-      }
-    }
-
-    if (connection === 'connecting' && !qr && cleanPhone) {
-      try {
-        await delay(5000);
-        console.log(`[User ${userId}] 🔢 Solicitando código de emparejamiento para ${cleanPhone}...`);
-        const code = await sock.requestPairingCode(cleanPhone);
-        instance.pairingCode = code;
-        console.log(`[User ${userId}] 🔢 Código generado: ${code?.match(/.{1,4}/g)?.join('-')}`);
-      } catch (err) {
-        console.error(`[User ${userId}] ❌ Error solicitando código:`, err);
       }
     }
   });
