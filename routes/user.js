@@ -3,7 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const { supabase, supabaseAdmin } = require('../auth/supabase');
-const { getUserStatus, startUserInstance, getGroupsForUser } = require('../core/manager');
+const { getUserStatus, startUserInstance, getGroupsForUser, clearUserSession } = require('../core/manager');
 const { getSettings, saveSettings } = require('../utils/db');
 
 // -------------------- MIDDLEWARES --------------------
@@ -120,12 +120,18 @@ router.post('/upload', upload.single('image'), async (req, res) => {
 });
 
 router.post('/restart', async (req, res) => {
-  const { phone_number } = req.profile;
-  await startUserInstance(req.user.id, phone_number);
+  const phone = String(req.profile.phone_number).replace(/\D/g, '');
+  await startUserInstance(req.user.id, phone);
   res.json({ success: true });
 });
 
-// NUEVO: Forzar código de emparejamiento
+// NUEVO: Limpiar sesión por completo
+router.post('/clear-session', async (req, res) => {
+  await clearUserSession(req.user.id);
+  res.json({ success: true, message: 'Sesión eliminada. Reinicia la conexión.' });
+});
+
+// NUEVO: Solicitar código manualmente
 router.post('/request-pairing-code', async (req, res) => {
   const userId = req.user.id;
   const instance = require('../core/manager').instances.get(userId);
@@ -134,7 +140,7 @@ router.post('/request-pairing-code', async (req, res) => {
     return res.status(400).json({ error: 'Instancia no iniciada. Usa /restart primero.' });
   }
 
-  const phoneNumber = req.profile.phone_number;
+  const phoneNumber = String(req.profile.phone_number).replace(/\D/g, '');
   try {
     const code = await instance.sock.requestPairingCode(phoneNumber);
     instance.pairingCode = code;
