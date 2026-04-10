@@ -151,3 +151,434 @@
   <script src="/config.js"></script>
   <script type="module">
     // === PARTE 2 DEL SCRIPT (continuación en el siguiente mensaje) ===
+    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+    // ---------- CONFIGURACIÓN INICIAL ----------
+    const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+    let token = localStorage.getItem('sb-token');
+    let currentProfile = null;
+    let groupsCache = [];
+
+    // ---------- FUNCIONES AUXILIARES ----------
+    function showError(msg) {
+      const el = document.getElementById('errorMessage');
+      el.textContent = '❌ ' + msg;
+      el.style.display = 'block';
+      setTimeout(() => el.style.display = 'none', 5000);
+    }
+
+    async function apiCall(endpoint, method='GET', body=null) {
+      const res = await fetch(`/api/user${endpoint}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: body ? JSON.stringify(body) : null
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Error en la solicitud');
+      }
+      return res;
+    }
+
+    async function uploadImage(file) {
+      const formData = new FormData();
+      formData.append('image', file);
+      const res = await fetch('/api/user/upload', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData
+      });
+      if (!res.ok) throw new Error('Error al subir imagen');
+      const data = await res.json();
+      return data.url;
+    }
+
+    // ---------- INICIALIZACIÓN ----------
+    async function main() {
+      const loadingDiv = document.getElementById('loading');
+      try {
+        if (!token) throw new Error('No hay sesión');
+        
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (error || !user) throw new Error('Sesión inválida');
+        
+        const profileRes = await fetch('/api/user/profile', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!profileRes.ok) throw new Error('Perfil no encontrado');
+        currentProfile = await profileRes.json();
+        
+        if (!currentProfile.is_approved) {
+          loadingDiv.style.display = 'none';
+          document.body.innerHTML = `<div style="max-width:600px;margin:50px auto;text-align:center"><h1>⏳ Cuenta pendiente de aprobación</h1><button id="logoutPending">Cerrar Sesión</button></div>`;
+          document.getElementById('logoutPending').onclick = () => { localStorage.removeItem('sb-token'); location.href='/login.html'; };
+          return;
+        }
+        
+        if (currentProfile.is_admin) {
+          const adminLink = document.createElement('div');
+          adminLink.innerHTML = '<p>🔧 <a href="/admin.html">Ir al panel de administración</a></p>';
+          document.getElementById('mainPanel').insertBefore(adminLink, document.getElementById('mainPanel').firstChild);
+        }
+        
+        loadingDiv.style.display = 'none';
+        document.getElementById('mainPanel').style.display = 'block';
+        document.getElementById('phoneDisplay').textContent = currentProfile.phone_number || 'No definido';
+        
+        setupEventListeners();
+        await loadStatus();
+        await loadSettings();
+        setInterval(loadStatus, 30000);
+      } catch (error) {
+        loadingDiv.innerHTML = `❌ ${error.message}<br>Redirigiendo...`;
+        localStorage.removeItem('sb-token');
+        setTimeout(() => location.href='/login.html', 2000);
+      }
+    }
+
+    // ---------- EVENTOS Y PESTAÑAS ----------
+    function setupEventListeners() {
+      // Pestañas
+      document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+          tab.classList.add('active');
+          document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+          if (tab.dataset.tab === 'groups') loadGroupsList();
+          if (tab.dataset.tab === 'tasks') loadTasks();
+          if (tab.dataset.tab === 'status-tasks') loadStatusTasks();
+        });
+      });
+      
+      document.getElementById('logout').onclick = () => {
+        localStorage.removeItem('sb-token');
+        location.href = '/login.html';
+      };
+      document.getElementById('refreshStatus').onclick = loadStatus;
+      document.getElementById('restartBot').onclick = restartBot;
+      document.getElementById('saveSettings').onclick = saveAutoReply;
+      document.getElementById('loadGroups').onclick = loadGroupsList;
+      document.getElementById('newTaskBtn').onclick = () => openTaskModal();
+      document.getElementById('newStatusTaskBtn').onclick = () => openTaskModal('status');
+      document.getElementById('cancelModal').onclick = closeModal;
+      document.getElementById('taskForm').onsubmit = saveTask;
+      
+      document.getElementById('taskTargetType').onchange = toggleTargetType;
+      document.getElementById('taskScheduleType').onchange = toggleScheduleType;
+      document.getElementById('taskImage').onchange = previewTaskImage;
+      document.getElementById('autoReplyImage').onchange = previewAutoReplyImage;
+    }
+
+    // ---------- ESTADO ----------
+    async function loadStatus() {
+      try {
+        const res = await apiCall('/status');
+        const data = await res.json();
+        const statusEl = document.getElementById('statusText');
+        statusEl.textContent = data.connected ? '🟢 Conectado' : (data.qrAvailable ? '🟡 Esperando QR' : '🔴 Desconectado');
+        
+        if (data.qrAvailable) {
+          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" style="max-width:250px"/>';
+          document.getElementById('codeContainer').innerHTML = '';
+        } else if (data.pairingCode) {
+          document.getElementById('qrContainer').innerHTML = '';
+          document.getElementById('codeContainer').innerHTML = `<p>🔢 Código: <strong>${data.pairingCode}</strong></p>`;
+        } else {
+          document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible</p>';
+          document.getElementById('codeContainer').innerHTML = '';
+        }
+      } catch (e) {
+        showError('Error al cargar estado: ' + e.message);
+      }
+    }
+
+    async function restartBot() {
+      if (!confirm('¿Reiniciar conexión?')) return;
+      try {
+        await apiCall('/restart', 'POST');
+        alert('Reiniciando...');
+        setTimeout(loadStatus, 5000);
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    // ---------- AUTO-REPLY ----------
+    async function loadSettings() {
+      const res = await apiCall('/settings');
+      const data = await res.json();
+      const ar = data.autoReply || {};
+      document.getElementById('autoReplyActive').checked = ar.active || false;
+      document.getElementById('autoReplyText').value = ar.text || '';
+      document.getElementById('startHour').value = ar.startHour ?? 23;
+      document.getElementById('endHour').value = ar.endHour ?? 8;
+      if (ar.mediaUrl) {
+        document.getElementById('autoReplyPreview').src = ar.mediaUrl;
+        document.getElementById('autoReplyPreview').style.display = 'block';
+      }
+    }
+
+    async function saveAutoReply() {
+      try {
+        const current = await (await apiCall('/settings')).json();
+        let mediaUrl = current.autoReply?.mediaUrl;
+        const imageFile = document.getElementById('autoReplyImage').files[0];
+        if (imageFile) mediaUrl = await uploadImage(imageFile);
+        
+        const settings = {
+          autoReply: {
+            active: document.getElementById('autoReplyActive').checked,
+            text: document.getElementById('autoReplyText').value,
+            startHour: parseInt(document.getElementById('startHour').value),
+            endHour: parseInt(document.getElementById('endHour').value),
+            mediaUrl
+          },
+          tasks: current.tasks || [],
+          statusTasks: current.statusTasks || []
+        };
+        await apiCall('/settings', 'POST', settings);
+        alert('Configuración guardada');
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    function previewAutoReplyImage() {
+      const file = document.getElementById('autoReplyImage').files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = e => {
+          document.getElementById('autoReplyPreview').src = e.target.result;
+          document.getElementById('autoReplyPreview').style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    // ---------- GRUPOS ----------
+    async function loadGroupsList() {
+      try {
+        const res = await apiCall('/groups');
+        groupsCache = await res.json();
+        const html = groupsCache.map(g => `<p><strong>${g.name}</strong> (${g.id})</p>`).join('');
+        document.getElementById('groupsList').innerHTML = html || '<p>No se encontraron grupos</p>';
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function populateGroupSelect() {
+      if (groupsCache.length === 0) {
+        try {
+          const res = await apiCall('/groups');
+          groupsCache = await res.json();
+        } catch (e) {
+          return;
+        }
+      }
+      const select = document.getElementById('taskGroupSelect');
+      select.innerHTML = groupsCache.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+    }
+
+    // ---------- TAREAS ----------
+    async function loadTasks() {
+      const res = await apiCall('/tasks');
+      const tasks = await res.json();
+      renderTasksTable(tasks, 'tasks');
+    }
+
+    async function loadStatusTasks() {
+      const res = await apiCall('/status-tasks');
+      const tasks = await res.json();
+      renderTasksTable(tasks, 'status');
+    }
+
+    function renderTasksTable(tasks, type) {
+      const tbody = document.querySelector(`#${type === 'tasks' ? 'tasksTable' : 'statusTasksTable'} tbody`);
+      tbody.innerHTML = '';
+      tasks.forEach(task => {
+        const tr = document.createElement('tr');
+        const schedule = task.scheduleType === 'cron' 
+          ? `${task.cronExpression || '0 0 * * *'}`
+          : `Cada ${task.intervalMinutes} min`;
+        tr.innerHTML = `
+          <td>${task.name || 'Sin nombre'}</td>
+          <td>${type === 'tasks' ? (task.target.includes('@g.us') ? 'Grupo' : 'Privado') : 'Estado'}</td>
+          <td>${task.mediaUrl ? '📷 Imagen' : '📝 Texto'}</td>
+          <td>${schedule}</td>
+          <td>${task.active ? '✅' : '❌'}</td>
+          <td>
+            <button class="test-btn" data-id="${task.id}" data-type="${type}">🧪 Probar</button>
+            <button class="edit-btn" data-id="${task.id}" data-type="${type}">✏️</button>
+            <button class="delete-btn" data-id="${task.id}" data-type="${type}">🗑️</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+      
+      document.querySelectorAll('.test-btn').forEach(b => b.addEventListener('click', testTask));
+      document.querySelectorAll('.edit-btn').forEach(b => b.addEventListener('click', editTask));
+      document.querySelectorAll('.delete-btn').forEach(b => b.addEventListener('click', deleteTask));
+    }
+
+    function openTaskModal(type = 'task', task = null) {
+      document.getElementById('modalTitle').textContent = task ? 'Editar' : 'Nueva ' + (type === 'task' ? 'Tarea' : 'Estado');
+      document.getElementById('taskType').value = type;
+      document.getElementById('taskId').value = task?.id || '';
+      
+      // Mostrar/ocultar sección de destino según tipo
+      const targetSection = document.getElementById('targetSection');
+      targetSection.style.display = type === 'task' ? 'block' : 'none';
+      
+      if (task) {
+        document.getElementById('taskName').value = task.name || '';
+        document.getElementById('taskMessage').value = task.message || '';
+        if (task.mediaUrl) {
+          document.getElementById('taskImagePreview').src = task.mediaUrl;
+          document.getElementById('taskImagePreview').style.display = 'block';
+        }
+        document.getElementById('taskScheduleType').value = task.scheduleType || 'cron';
+        if (task.scheduleType === 'cron') {
+          const [min, hour] = (task.cronExpression || '0 0').split(' ');
+          document.getElementById('taskHour').value = hour || 0;
+          document.getElementById('taskMinute').value = min || 0;
+        } else {
+          document.getElementById('taskInterval').value = task.intervalMinutes || 60;
+        }
+        document.getElementById('taskActive').checked = task.active !== false;
+        
+        if (type === 'task') {
+          if (task.target.includes('@g.us')) {
+            document.getElementById('taskTargetType').value = 'group';
+            document.getElementById('privateTargetDiv').style.display = 'none';
+            document.getElementById('groupTargetDiv').style.display = 'block';
+            populateGroupSelect().then(() => {
+              document.getElementById('taskGroupSelect').value = task.target;
+            });
+          } else {
+            document.getElementById('taskTargetType').value = 'private';
+            document.getElementById('taskPrivateNumber').value = task.target.replace('@s.whatsapp.net', '');
+          }
+        }
+      } else {
+        document.getElementById('taskForm').reset();
+        document.getElementById('taskImagePreview').style.display = 'none';
+        document.getElementById('taskScheduleType').value = 'cron';
+        document.getElementById('taskActive').checked = true;
+        if (type === 'task') {
+          document.getElementById('taskTargetType').value = 'private';
+          toggleTargetType();
+        }
+      }
+      toggleScheduleType();
+      document.getElementById('taskModal').style.display = 'block';
+    }
+
+    function closeModal() {
+      document.getElementById('taskModal').style.display = 'none';
+    }
+
+    function toggleTargetType() {
+      const type = document.getElementById('taskTargetType').value;
+      document.getElementById('privateTargetDiv').style.display = type === 'private' ? 'block' : 'none';
+      document.getElementById('groupTargetDiv').style.display = type === 'group' ? 'block' : 'none';
+      if (type === 'group') populateGroupSelect();
+    }
+
+    function toggleScheduleType() {
+      const type = document.getElementById('taskScheduleType').value;
+      document.getElementById('cronDiv').style.display = type === 'cron' ? 'block' : 'none';
+      document.getElementById('intervalDiv').style.display = type === 'interval' ? 'block' : 'none';
+    }
+
+    function previewTaskImage() {
+      const file = document.getElementById('taskImage').files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = e => {
+          document.getElementById('taskImagePreview').src = e.target.result;
+          document.getElementById('taskImagePreview').style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+
+    async function saveTask(e) {
+      e.preventDefault();
+      const type = document.getElementById('taskType').value;
+      const id = document.getElementById('taskId').value;
+      const name = document.getElementById('taskName').value;
+      const message = document.getElementById('taskMessage').value;
+      const scheduleType = document.getElementById('taskScheduleType').value;
+      const active = document.getElementById('taskActive').checked;
+      
+      let target;
+      if (type === 'task') {
+        const targetType = document.getElementById('taskTargetType').value;
+        target = targetType === 'private' 
+          ? document.getElementById('taskPrivateNumber').value + '@s.whatsapp.net'
+          : document.getElementById('taskGroupSelect').value;
+      } else {
+        target = 'status@broadcast';
+      }
+      
+      let cronExpression = null, intervalMinutes = null;
+      if (scheduleType === 'cron') {
+        const hour = document.getElementById('taskHour').value.padStart(2, '0');
+        const minute = document.getElementById('taskMinute').value.padStart(2, '0');
+        cronExpression = `${minute} ${hour} * * *`;
+      } else {
+        intervalMinutes = parseInt(document.getElementById('taskInterval').value);
+      }
+      
+      let mediaUrl = document.getElementById('taskImagePreview').style.display === 'block' 
+        ? document.getElementById('taskImagePreview').src : null;
+      const imageFile = document.getElementById('taskImage').files[0];
+      if (imageFile) mediaUrl = await uploadImage(imageFile);
+      
+      const task = { id, name, target, message, mediaUrl, scheduleType, cronExpression, intervalMinutes, active };
+      
+      const endpoint = type === 'task' ? '/tasks' : '/status-tasks';
+      await apiCall(endpoint, 'POST', { task });
+      closeModal();
+      if (type === 'task') loadTasks(); else loadStatusTasks();
+    }
+
+    async function editTask(e) {
+      const id = e.target.dataset.id;
+      const type = e.target.dataset.type;
+      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
+      const res = await apiCall(endpoint);
+      const tasks = await res.json();
+      const task = tasks.find(t => t.id === id);
+      if (task) openTaskModal(type === 'tasks' ? 'task' : 'status', task);
+    }
+
+    async function deleteTask(e) {
+      if (!confirm('¿Eliminar?')) return;
+      const id = e.target.dataset.id;
+      const type = e.target.dataset.type;
+      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
+      await apiCall(`${endpoint}/${id}`, 'DELETE');
+      if (type === 'tasks') loadTasks(); else loadStatusTasks();
+    }
+
+    async function testTask(e) {
+      const id = e.target.dataset.id;
+      const type = e.target.dataset.type;
+      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
+      try {
+        await apiCall(`${endpoint}/${id}/test`, 'POST');
+        alert('✅ Mensaje enviado correctamente');
+      } catch (error) {
+        showError('Error al probar: ' + error.message);
+      }
+    }
+
+    // Iniciar
+    main();
+  </script>
+</body>
+</html>
