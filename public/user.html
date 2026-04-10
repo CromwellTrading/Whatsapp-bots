@@ -4,252 +4,150 @@
   <title>Mi Panel - WhatsApp Bot</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
-    body { font-family: Arial; max-width: 900px; margin: 20px auto; padding: 20px; }
+    body { font-family: Arial; max-width: 1200px; margin: 20px auto; padding: 20px; }
     .card { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; }
-    button { padding: 8px 16px; margin-right: 10px; cursor: pointer; }
+    button { padding: 8px 16px; margin: 5px; cursor: pointer; }
     #logout { float: right; }
     textarea { width: 100%; }
     .error { color: red; background: #f8d7da; padding: 10px; border-radius: 5px; }
+    .success { color: green; background: #d4edda; padding: 10px; border-radius: 5px; }
     #loading { text-align: center; padding: 50px; }
+    .tab-bar { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 20px; }
+    .tab { padding: 10px 20px; cursor: pointer; background: #f0f0f0; border: none; }
+    .tab.active { background: #007bff; color: white; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background: #f2f2f2; }
+    .media-preview { max-width: 100px; max-height: 100px; }
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); }
+    .modal-content { background: white; max-width: 500px; margin: 50px auto; padding: 20px; border-radius: 8px; }
   </style>
 </head>
 <body>
-  <div id="loading">⏳ Verificando sesión...</div>
+  <div id="loading">⏳ Cargando panel...</div>
 
   <div id="mainPanel" style="display:none;">
     <button id="logout">Cerrar Sesión</button>
     <h1>🤖 Mi Panel de Control</h1>
 
-    <div class="card">
-      <h2>📡 Estado de Conexión</h2>
-      <p>Estado: <span id="statusText">Cargando...</span></p>
-      <p>Número vinculado: <strong><span id="phoneDisplay"></span></strong></p>
-      <div id="qrContainer" style="text-align:center;"></div>
-      <div id="codeContainer" style="font-size:1.2em;margin:10px 0;"></div>
-      <button id="refreshStatus">🔄 Actualizar</button>
-      <button id="restartBot">⚠️ Reiniciar Conexión</button>
+    <div class="tab-bar">
+      <button class="tab active" data-tab="status">Estado</button>
+      <button class="tab" data-tab="groups">Grupos</button>
+      <button class="tab" data-tab="tasks">Tareas</button>
+      <button class="tab" data-tab="status-tasks">Estados</button>
+      <button class="tab" data-tab="autoreply">Auto-Reply</button>
     </div>
 
-    <div class="card">
-      <h2>💬 Auto-Reply</h2>
-      <label><input type="checkbox" id="autoReplyActive"> Activar respuesta automática</label><br><br>
-      <label>Mensaje:<br><textarea id="autoReplyText" rows="3"></textarea></label><br><br>
-      <label>Hora inicio (0-23): <input type="number" id="startHour" min="0" max="23"></label>
-      <label>Hora fin (0-23): <input type="number" id="endHour" min="0" max="23"></label><br><br>
-      <button id="saveSettings">💾 Guardar Configuración</button>
+    <!-- Estado -->
+    <div id="tab-status" class="tab-content active">
+      <div class="card">
+        <h2>📡 Estado de Conexión</h2>
+        <p>Estado: <span id="statusText">Cargando...</span></p>
+        <p>Número vinculado: <strong><span id="phoneDisplay"></span></strong></p>
+        <div id="qrContainer" style="text-align:center;"></div>
+        <div id="codeContainer" style="font-size:1.2em;margin:10px 0;"></div>
+        <button id="refreshStatus">🔄 Actualizar</button>
+        <button id="restartBot">⚠️ Reiniciar Conexión</button>
+      </div>
+    </div>
+
+    <!-- Grupos -->
+    <div id="tab-groups" class="tab-content">
+      <div class="card">
+        <h2>👥 Grupos</h2>
+        <button id="loadGroups">🔄 Cargar grupos</button>
+        <div id="groupsList"></div>
+      </div>
+    </div>
+
+    <!-- Tareas -->
+    <div id="tab-tasks" class="tab-content">
+      <div class="card">
+        <h2>📋 Tareas Programadas</h2>
+        <button id="newTaskBtn">➕ Nueva Tarea</button>
+        <table id="tasksTable">
+          <thead><tr><th>Nombre</th><th>Destino</th><th>Tipo</th><th>Programación</th><th>Activa</th><th>Acciones</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Estados -->
+    <div id="tab-status-tasks" class="tab-content">
+      <div class="card">
+        <h2>📱 Estados Programados</h2>
+        <button id="newStatusTaskBtn">➕ Nuevo Estado</button>
+        <table id="statusTasksTable">
+          <thead><tr><th>Nombre</th><th>Mensaje</th><th>Tipo</th><th>Programación</th><th>Activa</th><th>Acciones</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Auto-Reply -->
+    <div id="tab-autoreply" class="tab-content">
+      <div class="card">
+        <h2>💬 Auto-Reply</h2>
+        <label><input type="checkbox" id="autoReplyActive"> Activar respuesta automática</label><br><br>
+        <label>Mensaje:<br><textarea id="autoReplyText" rows="3"></textarea></label><br><br>
+        <label>Imagen (opcional): <input type="file" id="autoReplyImage" accept="image/*"></label><br>
+        <img id="autoReplyPreview" class="media-preview" style="display:none;"><br>
+        <label>Hora inicio (0-23): <input type="number" id="startHour" min="0" max="23"></label>
+        <label>Hora fin (0-23): <input type="number" id="endHour" min="0" max="23"></label><br><br>
+        <button id="saveSettings">💾 Guardar Configuración</button>
+      </div>
     </div>
 
     <div id="errorMessage" class="error" style="display:none;"></div>
   </div>
 
+  <!-- Modal Tarea/Estado -->
+  <div id="taskModal" class="modal">
+    <div class="modal-content">
+      <h3 id="modalTitle">Nueva Tarea</h3>
+      <form id="taskForm">
+        <input type="hidden" id="taskId">
+        <input type="hidden" id="taskType" value="task"> <!-- 'task' o 'status' -->
+        <label>Nombre: <input type="text" id="taskName" required></label><br>
+        <div id="targetSection">
+          <label>Destino: 
+            <select id="taskTargetType">
+              <option value="private">Privado (número)</option>
+              <option value="group">Grupo</option>
+            </select>
+          </label><br>
+          <div id="privateTargetDiv">
+            <label>Número (sin +): <input type="tel" id="taskPrivateNumber" placeholder="5359190241"></label>
+          </div>
+          <div id="groupTargetDiv" style="display:none;">
+            <label>Grupo: <select id="taskGroupSelect"></select></label>
+          </div>
+        </div>
+        <label>Mensaje: <textarea id="taskMessage" rows="3"></textarea></label><br>
+        <label>Imagen (opcional): <input type="file" id="taskImage" accept="image/*"></label><br>
+        <img id="taskImagePreview" class="media-preview" style="display:none;"><br>
+        <label>Tipo de programación:
+          <select id="taskScheduleType">
+            <option value="cron">Hora específica (diaria)</option>
+            <option value="interval">Intervalo (minutos)</option>
+          </select>
+        </label><br>
+        <div id="cronDiv">
+          <label>Hora (0-23): <input type="number" id="taskHour" min="0" max="23"></label>
+          <label>Minuto: <input type="number" id="taskMinute" min="0" max="59"></label>
+        </div>
+        <div id="intervalDiv" style="display:none;">
+          <label>Minutos: <input type="number" id="taskInterval" min="1" value="60"></label>
+        </div>
+        <label><input type="checkbox" id="taskActive"> Activa</label><br>
+        <button type="submit">Guardar</button>
+        <button type="button" id="cancelModal">Cancelar</button>
+      </form>
+    </div>
+  </div>
+
   <script src="/config.js"></script>
   <script type="module">
-    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-
-    function showError(msg) {
-      const el = document.getElementById('errorMessage');
-      if (el) {
-        el.textContent = '❌ ' + msg;
-        el.style.display = 'block';
-      }
-      console.error(msg);
-    }
-
-    async function main() {
-      const loadingDiv = document.getElementById('loading');
-      
-      try {
-        if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
-          throw new Error('Configuración de Supabase no cargada');
-        }
-
-        const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-        
-        let token = localStorage.getItem('sb-token');
-        if (!token) {
-          loadingDiv.innerHTML = 'No hay sesión activa. Redirigiendo al login...';
-          setTimeout(() => window.location.href = '/login.html', 1500);
-          return;
-        }
-
-        loadingDiv.innerHTML = '🔑 Verificando token...';
-        
-        // Primero verificamos con Supabase directamente
-        const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-        if (userError || !user) {
-          console.warn('Token inválido según Supabase, limpiando...');
-          localStorage.removeItem('sb-token');
-          loadingDiv.innerHTML = 'Sesión expirada. Redirigiendo al login...';
-          setTimeout(() => window.location.href = '/login.html', 1500);
-          return;
-        }
-
-        loadingDiv.innerHTML = '👤 Cargando perfil...';
-        let profile;
-        try {
-          const profileRes = await fetch('/api/user/profile', {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          
-          if (!profileRes.ok) {
-            if (profileRes.status === 401) {
-              localStorage.removeItem('sb-token');
-              loadingDiv.innerHTML = 'Sesión no autorizada. Redirigiendo...';
-              setTimeout(() => window.location.href = '/login.html', 1500);
-              return;
-            }
-            const err = await profileRes.json();
-            throw new Error(err.error || 'Error al obtener perfil');
-          }
-          profile = await profileRes.json();
-        } catch (profileError) {
-          console.error('Error cargando perfil:', profileError);
-          loadingDiv.innerHTML = `❌ ${profileError.message}<br>Redirigiendo al login...`;
-          localStorage.removeItem('sb-token');
-          setTimeout(() => window.location.href = '/login.html', 2000);
-          return;
-        }
-
-        // Perfil cargado correctamente
-        if (profile.is_admin) {
-          const adminLink = document.createElement('div');
-          adminLink.innerHTML = '<p>🔧 Eres administrador. <a href="/admin.html">Ir al panel de administración</a></p>';
-          document.getElementById('mainPanel').insertBefore(adminLink, document.getElementById('mainPanel').firstChild);
-        }
-
-        if (!profile.is_approved) {
-          loadingDiv.style.display = 'none';
-          document.body.innerHTML = `
-            <div style="max-width:600px;margin:50px auto;text-align:center;border:1px solid #ffc107;padding:30px;border-radius:8px;background:#fff3cd;">
-              <h1>⏳ Cuenta pendiente de aprobación</h1>
-              <p>Tu registro ha sido exitoso, pero necesitas que el administrador apruebe tu cuenta.</p>
-              <button id="logoutPending">Cerrar Sesión</button>
-            </div>
-          `;
-          document.getElementById('logoutPending').onclick = () => {
-            localStorage.removeItem('sb-token');
-            window.location.href = '/login.html';
-          };
-          return;
-        }
-
-        // Todo OK, mostrar panel
-        loadingDiv.style.display = 'none';
-        document.getElementById('mainPanel').style.display = 'block';
-        document.getElementById('phoneDisplay').textContent = profile.phone_number || 'No definido';
-
-        // API Helper
-        async function apiCall(endpoint, method='GET', body=null) {
-          const res = await fetch(`/api/user${endpoint}`, {
-            method,
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: body ? JSON.stringify(body) : null
-          });
-          if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Error en la solicitud');
-          }
-          return res;
-        }
-
-        async function loadStatus() {
-          try {
-            const res = await apiCall('/status');
-            const data = await res.json();
-            const statusEl = document.getElementById('statusText');
-
-            if (data.connected) {
-              statusEl.textContent = '🟢 Conectado';
-            } else if (data.qrAvailable) {
-              statusEl.textContent = '🟡 Esperando escaneo QR';
-            } else {
-              statusEl.textContent = '🔴 Desconectado';
-            }
-
-            if (data.qrAvailable) {
-              document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px;"/>';
-              document.getElementById('codeContainer').innerHTML = '';
-            } else if (data.pairingCode) {
-              document.getElementById('qrContainer').innerHTML = '';
-              document.getElementById('codeContainer').innerHTML = `<p>🔢 Código: <strong>${data.pairingCode}</strong></p>`;
-            } else {
-              document.getElementById('qrContainer').innerHTML = '<p>No hay QR disponible.</p>';
-              document.getElementById('codeContainer').innerHTML = '';
-            }
-          } catch (e) {
-            showError('Error al cargar estado: ' + e.message);
-          }
-        }
-
-        async function loadSettings() {
-          try {
-            const res = await apiCall('/settings');
-            const data = await res.json();
-            document.getElementById('autoReplyActive').checked = data.autoReply?.active || false;
-            document.getElementById('autoReplyText').value = data.autoReply?.text || '';
-            document.getElementById('startHour').value = data.autoReply?.startHour ?? 23;
-            document.getElementById('endHour').value = data.autoReply?.endHour ?? 8;
-          } catch (e) {
-            showError('Error al cargar configuración: ' + e.message);
-          }
-        }
-
-        async function saveSettings() {
-          try {
-            const currentSettings = await (await apiCall('/settings')).json();
-            const settings = {
-              autoReply: {
-                active: document.getElementById('autoReplyActive').checked,
-                text: document.getElementById('autoReplyText').value,
-                startHour: parseInt(document.getElementById('startHour').value),
-                endHour: parseInt(document.getElementById('endHour').value)
-              },
-              tasks: currentSettings.tasks || []
-            };
-            await apiCall('/settings', 'POST', settings);
-            alert('✅ Configuración guardada');
-          } catch (e) {
-            showError('Error al guardar: ' + e.message);
-          }
-        }
-
-        async function restartBot() {
-          if (!confirm('¿Reiniciar conexión WhatsApp?')) return;
-          try {
-            await apiCall('/restart', 'POST');
-            alert('Reiniciando... Espera unos segundos.');
-            setTimeout(loadStatus, 5000);
-          } catch (e) {
-            showError('Error al reiniciar: ' + e.message);
-          }
-        }
-
-        function logout() {
-          localStorage.removeItem('sb-token');
-          window.location.href = '/login.html';
-        }
-
-        document.getElementById('refreshStatus').onclick = loadStatus;
-        document.getElementById('saveSettings').onclick = saveSettings;
-        document.getElementById('restartBot').onclick = restartBot;
-        document.getElementById('logout').onclick = logout;
-
-        loadStatus();
-        loadSettings();
-        setInterval(loadStatus, 30000);
-
-      } catch (error) {
-        loadingDiv.innerHTML = `❌ Error inesperado: ${error.message}<br>Redirigiendo...`;
-        console.error(error);
-        localStorage.removeItem('sb-token');
-        setTimeout(() => window.location.href = '/login.html', 2000);
-      }
-    }
-
-    main();
-  </script>
-</body>
-</html>
+    // === PARTE 2 DEL SCRIPT (continuación en el siguiente mensaje) ===
