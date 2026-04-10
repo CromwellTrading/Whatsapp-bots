@@ -8,11 +8,19 @@ const { initAuthCreds, BufferJSON, proto } = require('@whiskeysockets/baileys');
 async function createSupabaseAuthAdapter(userId) {
   const writeData = async (key, data) => {
     try {
+      // Sanitizar: asegurar que los datos sean serializables correctamente
+      const sanitized = JSON.parse(JSON.stringify(data, (k, v) => {
+        if (v && v.type === 'Buffer' && Array.isArray(v.data)) {
+          return Buffer.from(v.data);
+        }
+        return v;
+      }));
+      
       const { error } = await supabaseAdmin
         .from('whatsapp_sessions')
         .upsert({ 
           user_id: userId, 
-          session_data: { [key]: data },
+          session_data: { [key]: sanitized },
           updated_at: new Date()
         }, { onConflict: 'user_id' });
       if (error) throw error;
@@ -29,15 +37,19 @@ async function createSupabaseAuthAdapter(userId) {
         .eq('user_id', userId)
         .single();
       if (error) return null;
-      return data?.session_data?.[key] || null;
+      const raw = data?.session_data?.[key];
+      if (!raw) return null;
+      // Reconstruir Buffers si es necesario
+      return JSON.parse(JSON.stringify(raw), (k, v) => {
+        if (v && v.type === 'Buffer' && Array.isArray(v.data)) {
+          return Buffer.from(v.data);
+        }
+        return v;
+      });
     } catch (err) {
       console.error(`[User ${userId}] Error al leer ${key}:`, err);
       return null;
     }
-  };
-
-  const removeData = async (key) => {
-    // No implementamos borrado parcial para evitar perder sesión
   };
 
   let creds = (await readData('creds')) || initAuthCreds();
