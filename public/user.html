@@ -183,20 +183,19 @@
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-    // ---------- CONFIGURACIÓN INICIAL ----------
+    // ---------- CONFIGURACIÓN ----------
     const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
     let token = localStorage.getItem('sb-token');
     let currentProfile = null;
     let groupsCache = [];
     let manualPairingCode = null;
 
-    // ---------- FUNCIONES AUXILIARES ----------
+    // ---------- UTILIDADES ----------
     function showError(msg) {
       const el = document.getElementById('errorMessage');
       el.textContent = '❌ ' + msg;
       el.style.display = 'block';
       setTimeout(() => el.style.display = 'none', 5000);
-      console.error('❌', msg);
     }
 
     function showInfo(msg) {
@@ -204,10 +203,8 @@
       el.textContent = 'ℹ️ ' + msg;
       el.style.display = 'block';
       setTimeout(() => el.style.display = 'none', 3000);
-      console.log('ℹ️', msg);
     }
 
-    // API Helper con manejo automático de 401
     async function apiCall(endpoint, method='GET', body=null) {
       const res = await fetch(`/api/user${endpoint}`, {
         method,
@@ -219,10 +216,9 @@
       });
       
       if (res.status === 401) {
-        console.warn('🔐 Token inválido o expirado. Redirigiendo al login...');
         localStorage.removeItem('sb-token');
-        showInfo('Tu sesión ha expirado. Por favor, inicia sesión de nuevo.');
-        setTimeout(() => window.location.href = '/login.html', 2000);
+        showInfo('Sesión expirada. Redirigiendo...');
+        setTimeout(() => window.location.href = '/login.html', 1500);
         throw new Error('Sesión expirada');
       }
       
@@ -256,17 +252,16 @@
       const loadingDiv = document.getElementById('loading');
       try {
         if (!token) {
-          showInfo('No hay sesión activa. Redirigiendo...');
+          showInfo('No hay sesión. Redirigiendo...');
           setTimeout(() => window.location.href = '/login.html', 1500);
           return;
         }
         
-        console.log('🔑 Verificando token con Supabase...');
+        console.log('🔑 Verificando token...');
         const { data: { user }, error } = await supabase.auth.getUser(token);
         if (error || !user) {
-          console.warn('Token inválido:', error);
           localStorage.removeItem('sb-token');
-          showInfo('Sesión inválida. Inicia sesión de nuevo.');
+          showInfo('Sesión inválida. Redirigiendo...');
           setTimeout(() => window.location.href = '/login.html', 2000);
           return;
         }
@@ -275,13 +270,12 @@
         const profileRes = await fetch('/api/user/profile', { headers: { 'Authorization': `Bearer ${token}` } });
         if (profileRes.status === 401) {
           localStorage.removeItem('sb-token');
-          showInfo('Sesión expirada. Inicia sesión de nuevo.');
+          showInfo('Sesión expirada. Redirigiendo...');
           setTimeout(() => window.location.href = '/login.html', 2000);
           return;
         }
         if (!profileRes.ok) throw new Error('Error al cargar perfil');
         currentProfile = await profileRes.json();
-        console.log('✅ Perfil cargado:', currentProfile);
         
         if (!currentProfile.is_approved) {
           loadingDiv.style.display = 'none';
@@ -313,7 +307,7 @@
         await loadSettings();
         setInterval(loadStatus, 30000);
       } catch (error) {
-        console.error('❌ Error en main():', error);
+        console.error(error);
         loadingDiv.innerHTML = `❌ ${error.message}<br>Redirigiendo...`;
         localStorage.removeItem('sb-token');
         setTimeout(() => window.location.href = '/login.html', 2000);
@@ -321,6 +315,7 @@
     }
 
     function setupEventListeners() {
+      // Pestañas
       document.querySelectorAll('.tab').forEach(tab => {
         tab.addEventListener('click', () => {
           document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -363,7 +358,7 @@
       };
     }
 
-    // ---------- FUNCIONES DE ESTADO Y CONEXIÓN ----------
+    // ---------- ESTADO Y CONEXIÓN ----------
     async function loadStatus() {
       try {
         const res = await apiCall('/status');
@@ -376,12 +371,17 @@
           document.getElementById('codeContainer').innerHTML = '';
           document.getElementById('showQrModalBtn').style.display = 'none';
         } else if (data.qrAvailable) {
-  statusEl.textContent = '🟡 QR disponible - Escanea para vincular';
-  const timestamp = Date.now();
-  document.getElementById('qrContainer').innerHTML = `<img src="/api/user/qr?t=${timestamp}" alt="QR Code" style="max-width:250px;"/>`;
-  document.getElementById('codeContainer').innerHTML = '';
-  document.getElementById('showQrModalBtn').style.display = 'inline-block';
-    }
+          statusEl.textContent = '🟡 QR disponible - Escanea para vincular';
+          // El endpoint /qr ya devuelve la etiqueta <img> completa
+          const qrRes = await fetch('/api/user/qr', { headers: { 'Authorization': `Bearer ${token}` } });
+          if (qrRes.ok) {
+            const qrHtml = await qrRes.text();
+            document.getElementById('qrContainer').innerHTML = qrHtml;
+            document.getElementById('showQrModalBtn').style.display = 'inline-block';
+          } else {
+            document.getElementById('qrContainer').innerHTML = '<p>Error al cargar QR</p>';
+          }
+          document.getElementById('codeContainer').innerHTML = '';
         } else if (data.pairingCode || manualPairingCode) {
           statusEl.textContent = '🟡 Esperando vinculación con código';
           document.getElementById('qrContainer').innerHTML = '';
@@ -756,4 +756,4 @@
     main();
   </script>
 </body>
-</html>
+  </html>
