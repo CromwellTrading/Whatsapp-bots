@@ -38,7 +38,7 @@ async function startUserInstance(userId, phoneNumber) {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'debug' })),
     },
-    browser: Browsers.ubuntu('Chrome'),
+    browser: ['Mac OS', 'Safari', '10.15.7'],
     markOnlineOnConnect: true,
     syncFullHistory: false,
     connectTimeoutMs: 120000,           // más tiempo para escanear QR
