@@ -70,10 +70,17 @@ async function startUserInstance(userId, phoneNumber) {
 
     if (qr) {
       inst.qrBase64 = await QRCode.toDataURL(qr);
-      inst.pairingCode = null;
       inst.status = 'qr_pending';
-      inst.qrGeneratedAt = Date.now();
-      console.log(`[User ${userId}] 🖼️ QR generado (base64 length: ${inst.qrBase64.length})`);
+      console.log(`[User ${userId}] 🖼️ QR generado. Solicitando código de emparejamiento...`);
+      
+      // Pedir el código de forma automática e inmediata al recibir el evento QR
+      try {
+         const code = await sock.requestPairingCode(cleanPhone);
+         inst.pairingCode = code;
+         console.log(`[User ${userId}] 🔑 Código de emparejamiento generado automáticamente: ${code}`);
+      } catch (err) {
+         console.error(`[User ${userId}] ❌ Error pidiendo código:`, err);
+      }
     }
 
     if (connection === 'open') {
