@@ -71,14 +71,8 @@ router.get('/status', async (req, res) => {
 router.get('/qr', async (req, res) => {
   const status = getUserStatus(req.user.id);
   if (!status || !status.qr) return res.status(404).send('QR no disponible');
-  const QRCode = require('qrcode');
-  try {
-    const qrImage = await QRCode.toDataURL(status.qr);
-    res.send(`<img src="${qrImage}" alt="QR Code" />`);
-  } catch (err) {
-    console.error('Error generando QR:', err);
-    res.status(500).send('Error generando QR');
-  }
+  // El QR ya está en base64 listo para usar en src
+  res.send(`<img src="${status.qr}" alt="QR Code" />`);
 });
 
 router.get('/pairing-code', (req, res) => {
@@ -135,7 +129,7 @@ router.post('/clear-session', async (req, res) => {
   res.json({ success: true, message: 'Sesión eliminada. Reinicia la conexión.' });
 });
 
-// NUEVO: Solicitar código manualmente
+// Solicitar código manualmente (solo después de tener QR)
 router.post('/request-pairing-code', async (req, res) => {
   const userId = req.user.id;
   console.log(`[API] ${userId} solicitando código manualmente`);
@@ -144,6 +138,11 @@ router.post('/request-pairing-code', async (req, res) => {
   if (!instance) {
     console.log(`[API] ${userId} - Instancia no encontrada`);
     return res.status(400).json({ error: 'Instancia no iniciada. Usa /restart primero.' });
+  }
+
+  if (!instance.qrBase64) {
+    console.log(`[API] ${userId} - Aún no hay QR, espera unos segundos.`);
+    return res.status(400).json({ error: 'Aún no hay QR disponible. Espera unos segundos.' });
   }
 
   const phoneNumber = String(req.profile.phone_number).replace(/\D/g, '');
