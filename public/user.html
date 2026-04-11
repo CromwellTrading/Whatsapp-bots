@@ -376,10 +376,12 @@
           document.getElementById('codeContainer').innerHTML = '';
           document.getElementById('showQrModalBtn').style.display = 'none';
         } else if (data.qrAvailable) {
-          statusEl.textContent = '🟡 QR disponible - Escanea para vincular';
-          document.getElementById('qrContainer').innerHTML = '<img src="/api/user/qr" alt="QR Code" style="max-width:250px;"/>';
-          document.getElementById('codeContainer').innerHTML = '';
-          document.getElementById('showQrModalBtn').style.display = 'inline-block';
+  statusEl.textContent = '🟡 QR disponible - Escanea para vincular';
+  const timestamp = Date.now();
+  document.getElementById('qrContainer').innerHTML = `<img src="/api/user/qr?t=${timestamp}" alt="QR Code" style="max-width:250px;"/>`;
+  document.getElementById('codeContainer').innerHTML = '';
+  document.getElementById('showQrModalBtn').style.display = 'inline-block';
+    }
         } else if (data.pairingCode || manualPairingCode) {
           statusEl.textContent = '🟡 Esperando vinculación con código';
           document.getElementById('qrContainer').innerHTML = '';
