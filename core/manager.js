@@ -42,7 +42,7 @@ async function startUserInstance(userId, phoneNumber) {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'debug' })),
     },
-    browser: Browsers.ubuntu('Chrome'),
+    browser: ['Cromwell', 'Chrome', '121.0.0.0'],
     markOnlineOnConnect: true,
     syncFullHistory: false,
     connectTimeoutMs: 60000,
