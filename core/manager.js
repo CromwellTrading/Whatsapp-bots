@@ -11,8 +11,6 @@ const { createUserBot } = require('./userBot');
 const { getSettings } = require('../utils/db');
 
 const instances = new Map();
-
-// Directorio base para las sesiones
 const AUTH_DIR = path.join(__dirname, '..', 'auth_states');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
@@ -20,13 +18,11 @@ async function startUserInstance(userId, phoneNumber) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
   console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone}`);
 
-  // Cancelar timer previo si existe
   const existing = instances.get(userId);
   if (existing?.reconnectTimer) {
     clearTimeout(existing.reconnectTimer);
   }
 
-  // Usar sistema de archivos para la sesión (carpeta por usuario)
   const sessionDir = path.join(AUTH_DIR, userId);
   if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
@@ -42,11 +38,12 @@ async function startUserInstance(userId, phoneNumber) {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'debug' })),
     },
-    browser: ['Mac OS', 'Safari', '10.15.7'],
+    browser: Browsers.ubuntu('Chrome'),
     markOnlineOnConnect: true,
     syncFullHistory: false,
-    connectTimeoutMs: 60000,
-    defaultQueryTimeoutMs: 60000,
+    connectTimeoutMs: 120000,           // más tiempo para escanear QR
+    defaultQueryTimeoutMs: 120000,
+    qrTimeout: 120000,                  // tiempo máximo del QR
   });
 
   const instanceState = {
@@ -58,6 +55,7 @@ async function startUserInstance(userId, phoneNumber) {
     pairingCode: null,
     isConnected: false,
     reconnectTimer: null,
+    qrGeneratedAt: null,
   };
   instances.set(userId, instanceState);
 
@@ -74,6 +72,7 @@ async function startUserInstance(userId, phoneNumber) {
       inst.qrBase64 = await QRCode.toDataURL(qr);
       inst.pairingCode = null;
       inst.status = 'qr_pending';
+      inst.qrGeneratedAt = Date.now();
       console.log(`[User ${userId}] 🖼️ QR generado (base64 length: ${inst.qrBase64.length})`);
     }
 
@@ -98,6 +97,7 @@ async function startUserInstance(userId, phoneNumber) {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      // Si es 408 (QR timeout) y nunca se escaneó, reintentar con backoff
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       
       console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
@@ -105,13 +105,16 @@ async function startUserInstance(userId, phoneNumber) {
       inst.status = 'disconnected';
 
       if (shouldReconnect) {
-        console.log(`[User ${userId}] 🔄 Reintentando en 10s...`);
+        // Backoff progresivo: 10s, 20s, 30s...
+        const attempt = inst.reconnectAttempts || 0;
+        const delayMs = Math.min(10000 + attempt * 5000, 60000);
+        inst.reconnectAttempts = attempt + 1;
+        console.log(`[User ${userId}] 🔄 Reintentando en ${delayMs/1000}s...`);
         inst.reconnectTimer = setTimeout(() => {
           startUserInstance(userId, cleanPhone);
-        }, 10000);
+        }, delayMs);
       } else if (statusCode === DisconnectReason.loggedOut) {
-        console.log(`[User ${userId}] 🗑️ Sesión cerrada (loggedOut). Eliminando archivos de sesión.`);
-        // Limpiar carpeta de sesión
+        console.log(`[User ${userId}] 🗑️ Sesión cerrada (loggedOut). Eliminando archivos.`);
         fs.rmSync(sessionDir, { recursive: true, force: true });
         startUserInstance(userId, cleanPhone);
       }
@@ -205,7 +208,6 @@ async function clearUserSession(userId) {
     } catch (e) {}
     await stopUserInstance(userId);
   }
-  // Eliminar carpeta de sesión
   const sessionDir = path.join(__dirname, '..', 'auth_states', userId);
   if (fs.existsSync(sessionDir)) {
     fs.rmSync(sessionDir, { recursive: true, force: true });
