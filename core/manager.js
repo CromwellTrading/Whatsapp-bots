@@ -1,7 +1,8 @@
 const makeWASocket = require('@whiskeysockets/baileys').default;
-const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, delay } = require('@whiskeysockets/baileys');
+const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, delay, Browsers } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
+const QRCode = require('qrcode');
 
 const { supabaseAdmin } = require('../auth/supabase');
 const { createSupabaseAuthAdapter } = require('../auth/sessionAdapter');
@@ -10,12 +11,30 @@ const { getSettings } = require('../utils/db');
 
 const instances = new Map();
 
+// Estado global similar al de tu fragmento
+const createInitialState = (userId, phoneNumber) => ({
+  userId,
+  phoneNumber,
+  status: 'disconnected',
+  sock: null,
+  qrBase64: null,
+  pairingCode: null,
+  isConnected: false,
+  reconnectTimer: null,
+});
+
 async function startUserInstance(userId, phoneNumber) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
   console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone}`);
 
+  // Cancelar timer previo si existe
+  const existing = instances.get(userId);
+  if (existing?.reconnectTimer) {
+    clearTimeout(existing.reconnectTimer);
+  }
+
   const adapter = await createSupabaseAuthAdapter(userId);
-  const { state, saveCreds } = adapter;
+  const { state: authState, saveCreds } = adapter;
   const { version } = await fetchLatestBaileysVersion();
   console.log(`[User ${userId}] 📦 Baileys version: ${version.join('.')}`);
 
@@ -24,43 +43,44 @@ async function startUserInstance(userId, phoneNumber) {
     logger: pino({ level: 'debug' }),
     printQRInTerminal: false,
     auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'debug' })),
+      creds: authState.creds,
+      keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'debug' })),
     },
-    browser: ['Ubuntu', 'Chrome', '20.0.0'],
+    browser: Browsers.ubuntu('Chrome'), // 👈 User-agent correcto
     markOnlineOnConnect: true,
     syncFullHistory: false,
     connectTimeoutMs: 60000,
     defaultQueryTimeoutMs: 60000,
   });
 
-  instances.set(userId, {
+  const instanceState = {
+    ...createInitialState(userId, cleanPhone),
     sock,
-    qr: null,
-    pairingCode: null,
-    isConnected: false,
-    userData: { userId, phoneNumber: cleanPhone }
-  });
+    status: 'connecting',
+  };
+  instances.set(userId, instanceState);
 
   const userBot = createUserBot(userId, sock);
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
-    const instance = instances.get(userId);
-    if (!instance) return;
+    const inst = instances.get(userId);
+    if (!inst) return;
 
     console.log(`[User ${userId}] 📡 Connection update: connection=${connection}, qr=${!!qr}`);
 
     if (qr) {
-      instance.qr = qr;
-      instance.pairingCode = null;
-      console.log(`[User ${userId}] 🖼️ QR generado (longitud string: ${qr.length})`);
+      inst.qrBase64 = await QRCode.toDataURL(qr);
+      inst.pairingCode = null;
+      inst.status = 'qr_pending';
+      console.log(`[User ${userId}] 🖼️ QR generado (base64 length: ${inst.qrBase64.length})`);
     }
 
     if (connection === 'open') {
-      instance.isConnected = true;
-      instance.qr = null;
-      instance.pairingCode = null;
+      inst.isConnected = true;
+      inst.qrBase64 = null;
+      inst.pairingCode = null;
+      inst.status = 'connected';
       console.log(`[User ${userId}] ✅ Conectado a WhatsApp`);
 
       const settings = await getSettings(userId);
@@ -80,20 +100,20 @@ async function startUserInstance(userId, phoneNumber) {
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       
       console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
-      instance.isConnected = false;
+      inst.isConnected = false;
+      inst.status = 'disconnected';
 
       if (shouldReconnect) {
         console.log(`[User ${userId}] 🔄 Reintentando en 10s...`);
-        await delay(10000);
-        startUserInstance(userId, cleanPhone);
+        inst.reconnectTimer = setTimeout(() => {
+          startUserInstance(userId, cleanPhone);
+        }, 10000);
       } else if (statusCode === DisconnectReason.loggedOut) {
         console.log(`[User ${userId}] 🗑️ Sesión cerrada (loggedOut). Eliminando credenciales.`);
         await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
         startUserInstance(userId, cleanPhone);
       }
     }
-
-    // ELIMINADO: Bloque de solicitud automática de código
   });
 
   sock.ev.on('creds.update', (creds) => {
@@ -115,6 +135,7 @@ async function initManager() {
 async function stopUserInstance(userId) {
   const instance = instances.get(userId);
   if (instance) {
+    if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
     try {
       instance.sock?.end();
     } catch (e) {}
@@ -127,9 +148,10 @@ function getUserStatus(userId) {
   if (!instance) return null;
   return {
     connected: instance.isConnected,
-    qr: instance.qr,
+    qr: instance.qrBase64 ? instance.qrBase64 : null,
     pairingCode: instance.pairingCode,
-    phoneNumber: instance.userData.phoneNumber
+    phoneNumber: instance.phoneNumber,
+    status: instance.status,
   };
 }
 
@@ -138,9 +160,9 @@ function getAllInstances() {
   for (const [userId, instance] of instances.entries()) {
     result.push({
       userId,
-      phoneNumber: instance.userData.phoneNumber,
+      phoneNumber: instance.phoneNumber,
       connected: instance.isConnected,
-      hasQR: !!instance.qr
+      hasQR: !!instance.qrBase64,
     });
   }
   return result;
@@ -175,6 +197,7 @@ async function getGroupsForUser(userId) {
 async function clearUserSession(userId) {
   const instance = instances.get(userId);
   if (instance) {
+    if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
     try {
       await instance.sock?.logout();
     } catch (e) {}
@@ -194,5 +217,5 @@ module.exports = {
   startUserIfApproved,
   getGroupsForUser,
   clearUserSession,
-  instances
+  instances,
 };
