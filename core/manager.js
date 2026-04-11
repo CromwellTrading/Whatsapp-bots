@@ -42,7 +42,7 @@ async function startUserInstance(userId, phoneNumber) {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'debug' })),
     },
-    browser: ['Cromwell', 'Chrome', '121.0.0.0'],
+    browser: ['Mac OS', 'Safari', '10.15.7'],
     markOnlineOnConnect: true,
     syncFullHistory: false,
     connectTimeoutMs: 60000,
