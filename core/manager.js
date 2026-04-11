@@ -1,27 +1,20 @@
 const makeWASocket = require('@whiskeysockets/baileys').default;
-const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, delay, Browsers } = require('@whiskeysockets/baileys');
+const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, delay, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const QRCode = require('qrcode');
+const path = require('path');
+const fs = require('fs');
 
 const { supabaseAdmin } = require('../auth/supabase');
-const { createSupabaseAuthAdapter } = require('../auth/sessionAdapter');
 const { createUserBot } = require('./userBot');
 const { getSettings } = require('../utils/db');
 
 const instances = new Map();
 
-// Estado global similar al de tu fragmento
-const createInitialState = (userId, phoneNumber) => ({
-  userId,
-  phoneNumber,
-  status: 'disconnected',
-  sock: null,
-  qrBase64: null,
-  pairingCode: null,
-  isConnected: false,
-  reconnectTimer: null,
-});
+// Directorio base para las sesiones
+const AUTH_DIR = path.join(__dirname, '..', 'auth_states');
+if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
 async function startUserInstance(userId, phoneNumber) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
@@ -33,8 +26,11 @@ async function startUserInstance(userId, phoneNumber) {
     clearTimeout(existing.reconnectTimer);
   }
 
-  const adapter = await createSupabaseAuthAdapter(userId);
-  const { state: authState, saveCreds } = adapter;
+  // Usar sistema de archivos para la sesión (carpeta por usuario)
+  const sessionDir = path.join(AUTH_DIR, userId);
+  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+
+  const { state: authState, saveCreds } = await useMultiFileAuthState(sessionDir);
   const { version } = await fetchLatestBaileysVersion();
   console.log(`[User ${userId}] 📦 Baileys version: ${version.join('.')}`);
 
@@ -46,7 +42,7 @@ async function startUserInstance(userId, phoneNumber) {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'debug' })),
     },
-    browser: Browsers.ubuntu('Chrome'), // 👈 User-agent correcto
+    browser: Browsers.ubuntu('Chrome'),
     markOnlineOnConnect: true,
     syncFullHistory: false,
     connectTimeoutMs: 60000,
@@ -54,9 +50,14 @@ async function startUserInstance(userId, phoneNumber) {
   });
 
   const instanceState = {
-    ...createInitialState(userId, cleanPhone),
-    sock,
+    userId,
+    phoneNumber: cleanPhone,
     status: 'connecting',
+    sock,
+    qrBase64: null,
+    pairingCode: null,
+    isConnected: false,
+    reconnectTimer: null,
   };
   instances.set(userId, instanceState);
 
@@ -109,8 +110,9 @@ async function startUserInstance(userId, phoneNumber) {
           startUserInstance(userId, cleanPhone);
         }, 10000);
       } else if (statusCode === DisconnectReason.loggedOut) {
-        console.log(`[User ${userId}] 🗑️ Sesión cerrada (loggedOut). Eliminando credenciales.`);
-        await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
+        console.log(`[User ${userId}] 🗑️ Sesión cerrada (loggedOut). Eliminando archivos de sesión.`);
+        // Limpiar carpeta de sesión
+        fs.rmSync(sessionDir, { recursive: true, force: true });
         startUserInstance(userId, cleanPhone);
       }
     }
@@ -148,7 +150,7 @@ function getUserStatus(userId) {
   if (!instance) return null;
   return {
     connected: instance.isConnected,
-    qr: instance.qrBase64 ? instance.qrBase64 : null,
+    qr: instance.qrBase64,
     pairingCode: instance.pairingCode,
     phoneNumber: instance.phoneNumber,
     status: instance.status,
@@ -203,7 +205,11 @@ async function clearUserSession(userId) {
     } catch (e) {}
     await stopUserInstance(userId);
   }
-  await supabaseAdmin.from('whatsapp_sessions').delete().eq('user_id', userId);
+  // Eliminar carpeta de sesión
+  const sessionDir = path.join(__dirname, '..', 'auth_states', userId);
+  if (fs.existsSync(sessionDir)) {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
   console.log(`[User ${userId}] Sesión eliminada completamente.`);
   return true;
 }
