@@ -1,18 +1,32 @@
 const { getSettings } = require('../utils/db');
-const { supabaseAdmin } = require('../auth/supabase');
+
+const TIMEZONE = 'America/Havana';
+
+function getHourInHavana() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: TIMEZONE,
+    hour: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+  let hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+  if (hour === 24) hour = 0;
+  return hour;
+}
 
 function createUserBot(userId, sock) {
-  
+
   async function handleMessages(messages) {
     const msg = messages[0];
     if (!msg.message || msg.key.fromMe) return;
 
     const sender = msg.key.remoteJid;
-    const messageContent = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+    const messageContent =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text || '';
 
     console.log(`[User ${userId}] Mensaje de ${sender}: ${messageContent}`);
 
-    // Ignorar grupos para auto-reply (a menos que el usuario lo configure, por ahora solo privado)
+    // Auto-reply solo para mensajes privados
     if (sender.endsWith('@g.us')) return;
 
     const settings = await getSettings(userId);
@@ -21,33 +35,36 @@ function createUserBot(userId, sock) {
     const autoReply = settings.autoReply;
 
     if (autoReply?.active) {
-      const now = new Date();
-      const currentHour = now.getHours();
-      const isWithinQuietHours = 
-        (autoReply.startHour > autoReply.endHour && (currentHour >= autoReply.startHour || currentHour < autoReply.endHour)) ||
-        (autoReply.startHour <= autoReply.endHour && currentHour >= autoReply.startHour && currentHour < autoReply.endHour);
+      const currentHour = getHourInHavana();
+      let startHour = autoReply.startHour ?? 22;
+      let endHour = autoReply.endHour ?? 8;
+      // Tratar 24 como 0
+      if (startHour === 24) startHour = 0;
+      if (endHour === 24) endHour = 0;
 
-      if (isWithinQuietHours) {
-        await sock.sendMessage(sender, { text: autoReply.text });
+      const withinHours =
+        startHour > endHour
+          ? currentHour >= startHour || currentHour < endHour
+          : currentHour >= startHour && currentHour < endHour;
+
+      if (withinHours) {
+        try {
+          if (autoReply.mediaUrl) {
+            await sock.sendMessage(sender, {
+              image: { url: autoReply.mediaUrl },
+              caption: autoReply.text || ''
+            });
+          } else {
+            await sock.sendMessage(sender, { text: autoReply.text });
+          }
+        } catch (e) {
+          console.error(`[User ${userId}] Error en auto-reply:`, e.message);
+        }
       }
     }
 
-    // Comandos personalizados
     if (messageContent.toLowerCase() === '!ping') {
       await sock.sendMessage(sender, { text: 'pong' });
-    }
-
-    if (messageContent.toLowerCase() === '!listgroups') {
-      try {
-        const groups = await sock.groupFetchAllParticipating();
-        let groupList = '📋 *Grupos:*\n\n';
-        for (const id in groups) {
-          groupList += `- ${groups[id].subject} (${id})\n`;
-        }
-        await sock.sendMessage(sender, { text: groupList });
-      } catch (err) {
-        await sock.sendMessage(sender, { text: '❌ Error al obtener grupos.' });
-      }
     }
   }
 

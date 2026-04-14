@@ -1,5 +1,5 @@
 const makeWASocket = require('@whiskeysockets/baileys').default;
-const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, delay, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
+const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const QRCode = require('qrcode');
@@ -14,11 +14,10 @@ const instances = new Map();
 const AUTH_DIR = path.join(__dirname, '..', 'auth_states');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-async function startUserInstance(userId, phoneNumber) {
+async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
-  console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone}`);
+  console.log(`[User ${userId}] Iniciando instancia para ${cleanPhone} (pairingCode=${usePairingCode})`);
 
-  // Cancelar timer previo
   const existing = instances.get(userId);
   if (existing?.reconnectTimer) {
     clearTimeout(existing.reconnectTimer);
@@ -29,17 +28,17 @@ async function startUserInstance(userId, phoneNumber) {
 
   const { state: authState, saveCreds } = await useMultiFileAuthState(sessionDir);
   const { version } = await fetchLatestBaileysVersion();
-  console.log(`[User ${userId}] 📦 Baileys version: ${version.join('.')}`);
+  console.log(`[User ${userId}] Baileys version: ${version.join('.')}`);
 
   const sock = makeWASocket({
     version,
-    logger: pino({ level: 'debug' }),
+    logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     auth: {
       creds: authState.creds,
-      keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'debug' })),
+      keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'silent' })),
     },
-    browser: Browsers.ubuntu('Chrome'), // Exactamente como en Replit
+    browser: Browsers.ubuntu('Chrome'),
     markOnlineOnConnect: true,
     syncFullHistory: false,
     connectTimeoutMs: 120000,
@@ -56,6 +55,8 @@ async function startUserInstance(userId, phoneNumber) {
     isConnected: false,
     reconnectTimer: null,
     reconnectAttempts: 0,
+    usePairingCode,
+    pairingCodeRequested: false,
   };
   instances.set(userId, instanceState);
 
@@ -66,21 +67,38 @@ async function startUserInstance(userId, phoneNumber) {
     const inst = instances.get(userId);
     if (!inst) return;
 
-    console.log(`[User ${userId}] 📡 connection.update: connection=${connection}, qr=${!!qr}, pairingCode=${pairingCode}`);
+    console.log(`[User ${userId}] connection.update: connection=${connection}, qr=${!!qr}, pairingCode=${!!pairingCode}`);
 
     if (qr) {
-      console.log(`[User ${userId}] 🖼️ QR recibido, generando base64...`);
-      inst.qrBase64 = await QRCode.toDataURL(qr);
-      inst.pairingCode = null;
-      inst.status = 'qr_pending';
-      console.log(`[User ${userId}] ✅ QR base64 listo (longitud: ${inst.qrBase64.length})`);
+      if (usePairingCode && !inst.pairingCodeRequested) {
+        inst.pairingCodeRequested = true;
+        inst.status = 'requesting_code';
+        console.log(`[User ${userId}] QR listo, solicitando código de emparejamiento para ${cleanPhone}...`);
+        try {
+          const code = await sock.requestPairingCode(cleanPhone);
+          inst.pairingCode = code;
+          inst.qrBase64 = null;
+          inst.status = 'pairing';
+          console.log(`[User ${userId}] Código obtenido: ${code}`);
+        } catch (e) {
+          console.error(`[User ${userId}] Error al solicitar código:`, e.message);
+          inst.qrBase64 = await QRCode.toDataURL(qr);
+          inst.status = 'qr_pending';
+          inst.pairingCodeRequested = false;
+        }
+      } else if (!usePairingCode) {
+        console.log(`[User ${userId}] QR recibido, generando imagen base64...`);
+        inst.qrBase64 = await QRCode.toDataURL(qr);
+        inst.pairingCode = null;
+        inst.status = 'qr_pending';
+      }
     }
 
-    if (pairingCode) {
-      console.log(`[User ${userId}] 🔢 Código de emparejamiento automático: ${pairingCode}`);
+    if (pairingCode && !inst.pairingCode) {
       inst.pairingCode = pairingCode;
       inst.qrBase64 = null;
       inst.status = 'pairing';
+      console.log(`[User ${userId}] Código de emparejamiento recibido del servidor: ${pairingCode}`);
     }
 
     if (connection === 'open') {
@@ -89,13 +107,12 @@ async function startUserInstance(userId, phoneNumber) {
       inst.pairingCode = null;
       inst.status = 'connected';
       inst.reconnectAttempts = 0;
-      console.log(`[User ${userId}] ✅✅ CONECTADO a WhatsApp`);
+      console.log(`[User ${userId}] CONECTADO a WhatsApp`);
 
       const settings = await getSettings(userId);
       if (!settings) {
-        console.log(`[User ${userId}] 📝 Creando configuración por defecto`);
         const defaultSettings = {
-          autoReply: { active: false, text: 'Estoy fuera de servicio', startHour: 23, endHour: 8 },
+          autoReply: { active: false, text: 'Estoy fuera de servicio', startHour: 22, endHour: 8 },
           tasks: [],
           statusTasks: []
         };
@@ -106,8 +123,8 @@ async function startUserInstance(userId, phoneNumber) {
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      
-      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}, error=${lastDisconnect?.error?.message}`);
+
+      console.log(`[User ${userId}] Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
       inst.isConnected = false;
       inst.status = 'disconnected';
 
@@ -115,20 +132,19 @@ async function startUserInstance(userId, phoneNumber) {
         const attempt = inst.reconnectAttempts || 0;
         const delayMs = Math.min(10000 + attempt * 5000, 60000);
         inst.reconnectAttempts = attempt + 1;
-        console.log(`[User ${userId}] 🔄 Reintentando en ${delayMs/1000}s (intento ${attempt+1})...`);
+        console.log(`[User ${userId}] Reintentando en ${delayMs / 1000}s (intento ${attempt + 1})...`);
         inst.reconnectTimer = setTimeout(() => {
-          startUserInstance(userId, cleanPhone);
+          startUserInstance(userId, cleanPhone, false);
         }, delayMs);
       } else if (statusCode === DisconnectReason.loggedOut) {
-        console.log(`[User ${userId}] 🗑️ Sesión cerrada (loggedOut). Eliminando archivos.`);
+        console.log(`[User ${userId}] Sesión cerrada (loggedOut). Eliminando archivos.`);
         fs.rmSync(sessionDir, { recursive: true, force: true });
-        startUserInstance(userId, cleanPhone);
+        startUserInstance(userId, cleanPhone, false);
       }
     }
   });
 
-  sock.ev.on('creds.update', (creds) => {
-    console.log(`[User ${userId}] 💾 Credenciales actualizadas`);
+  sock.ev.on('creds.update', () => {
     saveCreds();
   });
 
@@ -140,16 +156,14 @@ async function startUserInstance(userId, phoneNumber) {
 }
 
 async function initManager() {
-  console.log('👥 Manager inicializado. Las conexiones se establecerán bajo demanda.');
+  console.log('Manager inicializado. Las conexiones se establecerán bajo demanda.');
 }
 
 async function stopUserInstance(userId) {
   const instance = instances.get(userId);
   if (instance) {
     if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-    try {
-      instance.sock?.end();
-    } catch (e) {}
+    try { instance.sock?.end(); } catch (e) {}
     instances.delete(userId);
   }
 }
@@ -174,6 +188,7 @@ function getAllInstances() {
       phoneNumber: instance.phoneNumber,
       connected: instance.isConnected,
       hasQR: !!instance.qrBase64,
+      status: instance.status,
     });
   }
   return result;
@@ -188,7 +203,7 @@ async function startUserIfApproved(userId) {
 
   if (profile && profile.is_approved) {
     await stopUserInstance(userId);
-    return startUserInstance(userId, profile.phone_number);
+    return startUserInstance(userId, profile.phone_number, false);
   }
   return null;
 }
@@ -209,12 +224,10 @@ async function clearUserSession(userId) {
   const instance = instances.get(userId);
   if (instance) {
     if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-    try {
-      await instance.sock?.logout();
-    } catch (e) {}
+    try { await instance.sock?.logout(); } catch (e) {}
     await stopUserInstance(userId);
   }
-  const sessionDir = path.join(__dirname, '..', 'auth_states', userId);
+  const sessionDir = path.join(AUTH_DIR, userId);
   if (fs.existsSync(sessionDir)) {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
