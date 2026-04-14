@@ -36,8 +36,8 @@ app.use('/api/admin', require('./routes/admin'));
 
 app.get('/', (req, res) => res.redirect('/login.html'));
 
-app.listen(PORT, async () => {
-  console.log(`🌐 Servidor corriendo en http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', async () => {
+  console.log(`🌐 Servidor corriendo en http://0.0.0.0:${PORT}`);
 
   await initManager();
   initCron();
