@@ -1,691 +1,1082 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-  <title>Mi Panel - WhatsApp Bot</title>
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mi Panel — WhatsApp Bot</title>
   <style>
-    body { font-family: Arial; max-width: 1200px; margin: 20px auto; padding: 20px; }
-    .card { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 20px 0; }
-    button { padding: 8px 16px; margin: 5px; cursor: pointer; }
-    #logout { float: right; }
-    textarea { width: 100%; }
-    .error { color: red; background: #f8d7da; padding: 10px; border-radius: 5px; }
-    .info { color: blue; background: #d4edda; padding: 10px; border-radius: 5px; }
-    #loading { text-align: center; padding: 50px; }
-    .tab-bar { display: flex; border-bottom: 1px solid #ccc; margin-bottom: 20px; }
-    .tab { padding: 10px 20px; cursor: pointer; background: #f0f0f0; border: none; }
-    .tab.active { background: #007bff; color: white; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
+
+    /* TOPBAR */
+    .topbar {
+      background: linear-gradient(135deg, #075e54, #128c7e);
+      color: white;
+      padding: 0 24px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+    .topbar h1 { font-size: 1.1em; font-weight: 600; }
+    .topbar .user-info { display: flex; align-items: center; gap: 12px; font-size: 0.85em; opacity: 0.9; }
+    .btn-logout {
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.3);
+      color: white;
+      padding: 6px 14px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 0.85em;
+      transition: background 0.2s;
+    }
+    .btn-logout:hover { background: rgba(255,255,255,0.25); }
+
+    /* LOADING */
+    #loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 60vh;
+      font-size: 1.1em;
+      color: #666;
+    }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid #ddd;
+      border-top-color: #128c7e;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* MAIN LAYOUT */
+    .layout { display: flex; min-height: calc(100vh - 60px); }
+
+    /* SIDEBAR */
+    .sidebar {
+      width: 220px;
+      background: #fff;
+      border-right: 1px solid #e5e5e5;
+      flex-shrink: 0;
+      padding: 16px 0;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 20px;
+      cursor: pointer;
+      color: #555;
+      font-size: 0.95em;
+      font-weight: 500;
+      transition: all 0.15s;
+      border-left: 3px solid transparent;
+    }
+    .nav-item:hover { background: #f5f5f5; color: #128c7e; }
+    .nav-item.active { color: #128c7e; background: #e8f5e9; border-left-color: #128c7e; }
+    .nav-item .icon { font-size: 1.1em; width: 20px; text-align: center; }
+
+    /* CONTENT */
+    .content { flex: 1; padding: 24px; overflow-y: auto; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    th { background: #f2f2f2; }
-    .media-preview { max-width: 100px; max-height: 100px; }
-    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
-    .modal-content { background: white; max-width: 500px; margin: 50px auto; padding: 20px; border-radius: 8px; }
-    .qr-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1001; }
-    .qr-modal-content { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border-radius: 10px; text-align: center; }
+
+    /* CARDS */
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .card h2 { font-size: 1.05em; color: #333; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+
+    /* BUTTONS */
+    .btn { padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; font-size: 0.9em; font-weight: 500; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-green { background: #25d366; color: white; }
+    .btn-green:hover { background: #1da851; }
+    .btn-blue { background: #128c7e; color: white; }
+    .btn-blue:hover { background: #075e54; }
+    .btn-red { background: #e53935; color: white; }
+    .btn-red:hover { background: #c62828; }
+    .btn-gray { background: #f0f2f5; color: #555; border: 1px solid #ddd; }
+    .btn-gray:hover { background: #e0e0e0; }
+    .btn-sm { padding: 6px 12px; font-size: 0.82em; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    /* STATUS BADGE */
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.82em;
+      font-weight: 600;
+    }
+    .badge-green { background: #e8f5e9; color: #2e7d32; }
+    .badge-yellow { background: #fff8e1; color: #f57f17; }
+    .badge-red { background: #ffebee; color: #c62828; }
+    .badge-blue { background: #e3f2fd; color: #1565c0; }
+
+    /* CONNECTION SECTION */
+    .connect-methods { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+    .connect-card {
+      flex: 1;
+      min-width: 200px;
+      border: 2px solid #e0e0e0;
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .connect-card:hover { border-color: #128c7e; background: #f9fffe; }
+    .connect-card .method-icon { font-size: 2.5em; margin-bottom: 8px; }
+    .connect-card h3 { font-size: 0.95em; color: #333; margin-bottom: 4px; }
+    .connect-card p { font-size: 0.8em; color: #888; }
+
+    /* PAIRING CODE DISPLAY */
+    .pairing-box {
+      background: linear-gradient(135deg, #e8f5e9, #f1f8ff);
+      border: 2px solid #25d366;
+      border-radius: 12px;
+      padding: 24px;
+      text-align: center;
+      margin: 16px 0;
+    }
+    .pairing-code {
+      font-size: 2.4em;
+      font-weight: 700;
+      letter-spacing: 6px;
+      color: #075e54;
+      font-family: monospace;
+      margin: 12px 0;
+    }
+    .pairing-instructions { font-size: 0.88em; color: #555; line-height: 1.6; }
+    .pairing-instructions strong { color: #075e54; }
+
+    /* QR DISPLAY */
+    .qr-box { text-align: center; padding: 12px 0; }
+    .qr-box img { max-width: 220px; border: 4px solid #25d366; border-radius: 12px; }
+
+    /* TABLE */
+    table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+    thead th { background: #f5f5f5; padding: 10px 12px; text-align: left; color: #666; font-weight: 600; font-size: 0.82em; text-transform: uppercase; letter-spacing: 0.5px; }
+    tbody td { padding: 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; color: #333; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: #fafafa; }
+
+    /* FORM ELEMENTS */
+    .form-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; align-items: flex-end; }
+    .form-group { flex: 1; min-width: 140px; }
+    .form-group label { display: block; font-size: 0.82em; font-weight: 600; color: #555; margin-bottom: 5px; }
+    .form-group input, .form-group textarea, .form-group select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1.5px solid #ddd;
+      border-radius: 8px;
+      font-size: 0.92em;
+      outline: none;
+      transition: border-color 0.2s;
+      background: white;
+    }
+    .form-group input:focus, .form-group textarea:focus, .form-group select:focus { border-color: #128c7e; }
+    .form-group .hint { font-size: 0.75em; color: #999; margin-top: 3px; }
+
+    /* CHECKBOX */
+    .checkbox-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .checkbox-row input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; accent-color: #128c7e; }
+
+    /* IMAGE PREVIEW */
+    .img-preview { max-width: 120px; max-height: 80px; border-radius: 8px; margin-top: 8px; border: 1px solid #ddd; display: none; }
+
+    /* TOAST */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 20px;
+      border-radius: 10px;
+      color: white;
+      font-size: 0.9em;
+      font-weight: 500;
+      z-index: 9999;
+      display: none;
+      max-width: 320px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+    #toast.success { background: #2e7d32; }
+    #toast.error { background: #c62828; }
+    #toast.info { background: #1565c0; }
+
+    /* MODAL */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: white;
+      border-radius: 16px;
+      padding: 28px;
+      width: 100%;
+      max-width: 500px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    .modal h3 { font-size: 1.1em; color: #333; margin-bottom: 20px; }
+    .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+    /* PENDING SCREEN */
+    .pending-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 60vh;
+      text-align: center;
+      gap: 16px;
+    }
+    .pending-screen .icon { font-size: 4em; }
+    .pending-screen h2 { color: #333; }
+    .pending-screen p { color: #888; max-width: 300px; }
+
+    /* GROUPS */
+    .group-item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+    .group-item:last-child { border-bottom: none; }
+    .group-icon { width: 38px; height: 38px; background: #e8f5e9; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.1em; flex-shrink: 0; }
+    .group-name { font-weight: 500; color: #333; font-size: 0.92em; }
+    .group-id { font-size: 0.78em; color: #999; font-family: monospace; }
+
+    /* EMPTY STATE */
+    .empty-state { text-align: center; padding: 40px; color: #aaa; }
+    .empty-state .icon { font-size: 2.5em; margin-bottom: 8px; }
+
+    @media (max-width: 700px) {
+      .sidebar { display: none; }
+      .content { padding: 16px; }
+      .connect-methods { flex-direction: column; }
+    }
   </style>
 </head>
 <body>
-  <div id="loading">⏳ Cargando panel...</div>
 
-  <div id="mainPanel" style="display:none;">
-    <button id="logout">Cerrar Sesión</button>
-    <h1>🤖 Mi Panel de Control</h1>
+<div id="loading">
+  <div class="spinner"></div>
+  Cargando panel...
+</div>
 
-    <div class="tab-bar">
-      <button class="tab active" data-tab="status">Estado</button>
-      <button class="tab" data-tab="groups">Grupos</button>
-      <button class="tab" data-tab="tasks">Tareas</button>
-      <button class="tab" data-tab="status-tasks">Estados</button>
-      <button class="tab" data-tab="autoreply">Auto-Reply</button>
+<div id="app" style="display:none;">
+  <div class="topbar">
+    <h1>💬 WhatsApp Bot SaaS</h1>
+    <div class="user-info">
+      <span id="topbarPhone"></span>
+      <button class="btn-logout" id="logoutBtn">Salir</button>
     </div>
-
-    <!-- Estado -->
-    <div id="tab-status" class="tab-content active">
-      <div class="card">
-        <h2>📡 Estado de Conexión</h2>
-        <p>Estado: <span id="statusText">Cargando...</span></p>
-        <p>Número vinculado: <strong><span id="phoneDisplay"></span></strong></p>
-        
-        <div style="margin: 15px 0;">
-          <button id="restartBtn" style="background:#25D366; color:white; font-weight:bold; padding:10px 20px;">
-            📷 Conectar WhatsApp (QR)
-          </button>
-          <button id="clearSessionBtn" style="background:#dc3545; color:white;">🧹 Limpiar sesión</button>
-        </div>
-        
-        <div id="qrContainer" style="text-align:center; margin:15px 0;"></div>
-        <div id="codeContainer" style="font-size:1.3em; margin:10px 0; padding:10px; background:#f0f0f0; border-radius:5px;"></div>
-        
-        <button id="refreshStatus">🔄 Actualizar</button>
-        <button id="showQrModalBtn" style="display:none;">🔍 Ampliar QR</button>
-      </div>
-    </div>
-
-    <!-- Grupos -->
-    <div id="tab-groups" class="tab-content">
-      <div class="card">
-        <h2>👥 Grupos</h2>
-        <button id="loadGroups">🔄 Cargar grupos</button>
-        <div id="groupsList"></div>
-      </div>
-    </div>
-
-    <!-- Tareas -->
-    <div id="tab-tasks" class="tab-content">
-      <div class="card">
-        <h2>📋 Tareas Programadas</h2>
-        <button id="newTaskBtn">➕ Nueva Tarea</button>
-        <table id="tasksTable">
-          <thead><tr><th>Nombre</th><th>Destino</th><th>Tipo</th><th>Programación</th><th>Activa</th><th>Acciones</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Estados -->
-    <div id="tab-status-tasks" class="tab-content">
-      <div class="card">
-        <h2>📱 Estados Programados</h2>
-        <button id="newStatusTaskBtn">➕ Nuevo Estado</button>
-        <table id="statusTasksTable">
-          <thead><tr><th>Nombre</th><th>Mensaje</th><th>Tipo</th><th>Programación</th><th>Activa</th><th>Acciones</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Auto-Reply -->
-    <div id="tab-autoreply" class="tab-content">
-      <div class="card">
-        <h2>💬 Auto-Reply</h2>
-        <label><input type="checkbox" id="autoReplyActive"> Activar respuesta automática</label><br><br>
-        <label>Mensaje:<br><textarea id="autoReplyText" rows="3"></textarea></label><br><br>
-        <label>Imagen (opcional): <input type="file" id="autoReplyImage" accept="image/*"></label><br>
-        <img id="autoReplyPreview" class="media-preview" style="display:none;"><br>
-        <label>Hora inicio (0-23): <input type="number" id="startHour" min="0" max="23"></label>
-        <label>Hora fin (0-23): <input type="number" id="endHour" min="0" max="23"></label><br><br>
-        <button id="saveSettings">💾 Guardar Configuración</button>
-      </div>
-    </div>
-
-    <div id="errorMessage" class="error" style="display:none;"></div>
-    <div id="infoMessage" class="info" style="display:none;"></div>
   </div>
 
-  <!-- Modal Tarea/Estado -->
-  <div id="taskModal" class="modal">
-    <div class="modal-content">
-      <h3 id="modalTitle">Nueva Tarea</h3>
-      <form id="taskForm">
-        <input type="hidden" id="taskId">
-        <input type="hidden" id="taskType" value="task">
-        <label>Nombre: <input type="text" id="taskName" required></label><br>
-        <div id="targetSection">
-          <label>Destino: 
-            <select id="taskTargetType">
-              <option value="private">Privado (número)</option>
-              <option value="group">Grupo</option>
-            </select>
-          </label><br>
-          <div id="privateTargetDiv">
-            <label>Número (sin +): <input type="tel" id="taskPrivateNumber" placeholder="5359190241"></label>
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="nav-item active" data-tab="status">
+        <span class="icon">📡</span> Estado
+      </div>
+      <div class="nav-item" data-tab="groups">
+        <span class="icon">👥</span> Grupos
+      </div>
+      <div class="nav-item" data-tab="tasks">
+        <span class="icon">📋</span> Tareas
+      </div>
+      <div class="nav-item" data-tab="statusTasks">
+        <span class="icon">📸</span> Estados
+      </div>
+      <div class="nav-item" data-tab="autoreply">
+        <span class="icon">💬</span> Auto-Reply
+      </div>
+      <div id="adminNavItem" class="nav-item" style="display:none;" onclick="window.location.href='/admin.html'">
+        <span class="icon">🔧</span> Administrar
+      </div>
+    </nav>
+
+    <main class="content">
+      <!-- STATUS TAB -->
+      <div id="tab-status" class="tab-content active">
+        <div class="card">
+          <h2>📡 Estado de Conexión</h2>
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px; flex-wrap:wrap;">
+            <div>Estado: <span id="statusBadge" class="badge badge-red">Desconectado</span></div>
+            <div style="color:#888; font-size:0.85em;">Número: <strong id="phoneDisplay">—</strong></div>
+            <button class="btn btn-gray btn-sm" id="refreshStatusBtn">🔄 Actualizar</button>
           </div>
-          <div id="groupTargetDiv" style="display:none;">
-            <label>Grupo: <select id="taskGroupSelect"></select></label>
-          </div>
-        </div>
-        <label>Mensaje: <textarea id="taskMessage" rows="3"></textarea></label><br>
-        <label>Imagen (opcional): <input type="file" id="taskImage" accept="image/*"></label><br>
-        <img id="taskImagePreview" class="media-preview" style="display:none;"><br>
-        <label>Tipo de programación:
-          <select id="taskScheduleType">
-            <option value="cron">Hora específica (diaria)</option>
-            <option value="interval">Intervalo (minutos)</option>
-          </select>
-        </label><br>
-        <div id="cronDiv">
-          <label>Hora (0-23): <input type="number" id="taskHour" min="0" max="23"></label>
-          <label>Minuto: <input type="number" id="taskMinute" min="0" max="59"></label>
-        </div>
-        <div id="intervalDiv" style="display:none;">
-          <label>Minutos: <input type="number" id="taskInterval" min="1" value="60"></label>
-        </div>
-        <label><input type="checkbox" id="taskActive"> Activa</label><br>
-        <button type="submit">Guardar</button>
-        <button type="button" id="cancelModal">Cancelar</button>
-      </form>
-    </div>
-  </div>
 
-  <!-- Modal para QR ampliado -->
-  <div id="qrModal" class="qr-modal">
-    <div class="qr-modal-content">
-      <img id="qrModalImage" src="" alt="QR Code" style="max-width:300px; width:100%;">
-      <br><br>
-      <button id="closeQrModal" style="padding:10px 20px;">Cerrar</button>
-    </div>
-  </div>
-
-  <script src="/config.js"></script>
-  <script type="module">
-    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-
-    const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-    let token = localStorage.getItem('sb-token');
-    let currentProfile = null;
-    let groupsCache = [];
-
-    function showError(msg) {
-      const el = document.getElementById('errorMessage');
-      el.textContent = '❌ ' + msg;
-      el.style.display = 'block';
-      setTimeout(() => el.style.display = 'none', 5000);
-    }
-
-    function showInfo(msg) {
-      const el = document.getElementById('infoMessage');
-      el.textContent = 'ℹ️ ' + msg;
-      el.style.display = 'block';
-      setTimeout(() => el.style.display = 'none', 3000);
-    }
-
-    async function apiCall(endpoint, method='GET', body=null) {
-      const res = await fetch(`/api/user${endpoint}`, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: body ? JSON.stringify(body) : null
-      });
-      if (res.status === 401) {
-        localStorage.removeItem('sb-token');
-        showInfo('Sesión expirada. Redirigiendo...');
-        setTimeout(() => window.location.href = '/login.html', 1500);
-        throw new Error('Sesión expirada');
-      }
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Error en la solicitud');
-      }
-      return res;
-    }
-
-    async function uploadImage(file) {
-      const formData = new FormData();
-      formData.append('image', file);
-      const res = await fetch('/api/user/upload', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-        body: formData
-      });
-      if (res.status === 401) {
-        localStorage.removeItem('sb-token');
-        window.location.href = '/login.html';
-        throw new Error('Sesión expirada');
-      }
-      if (!res.ok) throw new Error('Error al subir imagen');
-      const data = await res.json();
-      return data.url;
-    }
-
-    async function main() {
-      const loadingDiv = document.getElementById('loading');
-      try {
-        if (!token) {
-          showInfo('No hay sesión. Redirigiendo...');
-          setTimeout(() => window.location.href = '/login.html', 1500);
-          return;
-        }
-        const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (error || !user) {
-          localStorage.removeItem('sb-token');
-          showInfo('Sesión inválida. Redirigiendo...');
-          setTimeout(() => window.location.href = '/login.html', 2000);
-          return;
-        }
-        const profileRes = await fetch('/api/user/profile', { headers: { 'Authorization': `Bearer ${token}` } });
-        if (profileRes.status === 401) {
-          localStorage.removeItem('sb-token');
-          showInfo('Sesión expirada. Redirigiendo...');
-          setTimeout(() => window.location.href = '/login.html', 2000);
-          return;
-        }
-        if (!profileRes.ok) throw new Error('Error al cargar perfil');
-        currentProfile = await profileRes.json();
-        
-        if (!currentProfile.is_approved) {
-          loadingDiv.style.display = 'none';
-          document.body.innerHTML = `
-            <div style="max-width:600px;margin:50px auto;text-align:center">
-              <h1>⏳ Cuenta pendiente de aprobación</h1>
-              <button id="logoutPending">Cerrar Sesión</button>
+          <div id="connectSection">
+            <p style="color:#666; font-size:0.9em; margin-bottom:12px;">Elige cómo vincular tu WhatsApp:</p>
+            <div class="connect-methods">
+              <div class="connect-card" id="connectQR">
+                <div class="method-icon">📷</div>
+                <h3>Código QR</h3>
+                <p>Escanea el QR desde tu teléfono</p>
+              </div>
+              <div class="connect-card" id="connectCode">
+                <div class="method-icon">🔢</div>
+                <h3>Código de 8 dígitos</h3>
+                <p>Recibe notificación en tu WhatsApp</p>
+              </div>
             </div>
-          `;
-          document.getElementById('logoutPending').onclick = () => {
-            localStorage.removeItem('sb-token');
-            window.location.href = '/login.html';
-          };
-          return;
-        }
-        
-        if (currentProfile.is_admin) {
-          const adminLink = document.createElement('div');
-          adminLink.innerHTML = '<p>🔧 <a href="/admin.html">Ir al panel de administración</a></p>';
-          document.getElementById('mainPanel').insertBefore(adminLink, document.getElementById('mainPanel').firstChild);
-        }
-        
-        loadingDiv.style.display = 'none';
-        document.getElementById('mainPanel').style.display = 'block';
-        document.getElementById('phoneDisplay').textContent = currentProfile.phone_number || 'No definido';
-        
-        setupEventListeners();
-        await loadStatus();
-        await loadSettings();
-        setInterval(loadStatus, 30000);
-      } catch (error) {
-        console.error(error);
-        loadingDiv.innerHTML = `❌ ${error.message}<br>Redirigiendo...`;
-        localStorage.removeItem('sb-token');
-        setTimeout(() => window.location.href = '/login.html', 2000);
-      }
+          </div>
+
+          <div id="connectingSection" style="display:none; text-align:center; padding:20px;">
+            <div class="spinner" style="display:inline-block; margin: 0 auto 12px;"></div>
+            <p id="connectingMsg" style="color:#666;">Conectando...</p>
+          </div>
+
+          <div id="qrSection" style="display:none;">
+            <div class="qr-box" id="qrContainer"></div>
+            <p style="text-align:center; font-size:0.85em; color:#888; margin-top:8px;">Abre WhatsApp → Más opciones → Dispositivos vinculados → Vincular dispositivo</p>
+          </div>
+
+          <div id="pairingSection" style="display:none;">
+            <div class="pairing-box">
+              <p style="font-size:0.9em; color:#666;">Tu código de vinculación:</p>
+              <div class="pairing-code" id="pairingCodeDisplay">—</div>
+              <div class="pairing-instructions">
+                1. Abre <strong>WhatsApp</strong> en tu teléfono<br>
+                2. Ve a <strong>Más opciones → Dispositivos vinculados</strong><br>
+                3. Toca <strong>Vincular con número de teléfono</strong><br>
+                4. Ingresa el código de arriba cuando te lo pidan
+              </div>
+            </div>
+          </div>
+
+          <div id="connectedSection" style="display:none;">
+            <div style="background:#e8f5e9; border-radius:10px; padding:16px; display:flex; align-items:center; gap:12px;">
+              <span style="font-size:2em;">✅</span>
+              <div>
+                <div style="font-weight:600; color:#2e7d32;">Conectado correctamente</div>
+                <div style="font-size:0.85em; color:#555;">Tu WhatsApp está activo y listo para enviar mensajes</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:16px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn btn-red btn-sm" id="clearSessionBtn">🧹 Desconectar y limpiar sesión</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- GROUPS TAB -->
+      <div id="tab-groups" class="tab-content">
+        <div class="card">
+          <h2>👥 Mis Grupos</h2>
+          <button class="btn btn-blue btn-sm" id="loadGroupsBtn" style="margin-bottom:16px;">🔄 Cargar grupos</button>
+          <div id="groupsList">
+            <div class="empty-state"><div class="icon">👥</div><p>Haz clic en "Cargar grupos" para ver tus grupos</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TASKS TAB -->
+      <div id="tab-tasks" class="tab-content">
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h2 style="margin:0;">📋 Tareas Programadas</h2>
+            <button class="btn btn-green btn-sm" id="newTaskBtn">➕ Nueva tarea</button>
+          </div>
+          <div id="tasksContainer">
+            <div class="empty-state"><div class="icon">📋</div><p>No tienes tareas programadas</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- STATUS TASKS TAB -->
+      <div id="tab-statusTasks" class="tab-content">
+        <div class="card">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h2 style="margin:0;">📸 Estados Programados</h2>
+            <button class="btn btn-green btn-sm" id="newStatusTaskBtn">➕ Nuevo estado</button>
+          </div>
+          <div id="statusTasksContainer">
+            <div class="empty-state"><div class="icon">📸</div><p>No tienes estados programados</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AUTOREPLY TAB -->
+      <div id="tab-autoreply" class="tab-content">
+        <div class="card">
+          <h2>💬 Respuesta Automática</h2>
+          <p style="font-size:0.85em; color:#888; margin-bottom:20px;">Responde automáticamente los mensajes que lleguen en horario nocturno o cuando estés offline.</p>
+
+          <div class="form-row">
+            <div class="form-group" style="flex:0 0 auto;">
+              <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                <input type="checkbox" id="autoReplyActive" style="width:18px;height:18px; accent-color:#128c7e;">
+                <span>Activar auto-reply</span>
+              </label>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:2;">
+              <label>Mensaje de respuesta</label>
+              <textarea id="autoReplyText" rows="3" placeholder="Ej: Estoy fuera de servicio, te respondo más tarde..."></textarea>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Imagen adjunta (opcional)</label>
+              <input type="file" id="autoReplyImage" accept="image/*">
+              <img id="autoReplyPreview" class="img-preview">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Hora inicio (formato militar 0–24)</label>
+              <input type="number" id="startHour" min="0" max="24" placeholder="22">
+              <div class="hint">0 = medianoche, 24 = medianoche (igual que 0)</div>
+            </div>
+            <div class="form-group">
+              <label>Hora fin (formato militar 0–24)</label>
+              <input type="number" id="endHour" min="0" max="24" placeholder="8">
+              <div class="hint">Zona horaria: La Habana, Cuba</div>
+            </div>
+          </div>
+          <button class="btn btn-green" id="saveAutoReplyBtn">💾 Guardar configuración</button>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- TASK MODAL -->
+<div class="modal-overlay" id="taskModal">
+  <div class="modal">
+    <h3 id="modalTitle">Nueva Tarea</h3>
+    <input type="hidden" id="taskId">
+    <input type="hidden" id="taskTypeField" value="task">
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Nombre de la tarea</label>
+        <input type="text" id="taskName" placeholder="Ej: Mensaje diario al grupo ventas" required>
+      </div>
+    </div>
+
+    <div id="taskTargetSection">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Tipo de destino</label>
+          <select id="taskTargetType">
+            <option value="private">Número privado</option>
+            <option value="group">Grupo</option>
+          </select>
+        </div>
+      </div>
+      <div id="privateTargetDiv" class="form-row">
+        <div class="form-group">
+          <label>Número (sin + ni espacios)</label>
+          <input type="tel" id="taskPrivateNumber" placeholder="5359190241">
+        </div>
+      </div>
+      <div id="groupTargetDiv" style="display:none;" class="form-row">
+        <div class="form-group">
+          <label>Grupo</label>
+          <select id="taskGroupSelect"><option value="">— Cargando grupos —</option></select>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Mensaje</label>
+        <textarea id="taskMessage" rows="3" placeholder="Escribe el mensaje aquí..."></textarea>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Imagen adjunta (opcional)</label>
+        <input type="file" id="taskImage" accept="image/*">
+        <img id="taskImagePreview" class="img-preview">
+        <div id="taskCurrentImage" style="font-size:0.8em; color:#888; margin-top:4px;"></div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Tipo de programación</label>
+        <select id="taskScheduleType">
+          <option value="cron">Hora específica (diaria)</option>
+          <option value="interval">Intervalo de tiempo</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="cronSection" class="form-row">
+      <div class="form-group">
+        <label>Hora (formato militar 0–24)</label>
+        <input type="number" id="taskHour" min="0" max="24" placeholder="14">
+        <div class="hint">24 = medianoche (igual que 0)</div>
+      </div>
+      <div class="form-group">
+        <label>Minuto (0–59)</label>
+        <input type="number" id="taskMinute" min="0" max="59" placeholder="30">
+      </div>
+    </div>
+    <div id="intervalSection" style="display:none;" class="form-row">
+      <div class="form-group">
+        <label>Cada cuántos minutos</label>
+        <input type="number" id="taskInterval" min="1" value="60">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="checkbox-row">
+          <input type="checkbox" id="taskActive">
+          <span>Activar tarea</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-gray" id="cancelModal">Cancelar</button>
+      <button class="btn btn-green" id="saveTaskBtn">💾 Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<script src="/config.js"></script>
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+let token = localStorage.getItem('sb-token');
+let currentProfile = null;
+let groupsCache = [];
+let statusPollerInterval = null;
+
+// ---- TOAST ----
+function toast(msg, type = 'success', duration = 3000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = type;
+  el.style.display = 'block';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => el.style.display = 'none', duration);
+}
+
+// ---- API ----
+async function api(path, method = 'GET', body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(`/api/user${path}`, opts);
+  if (res.status === 401) { localStorage.removeItem('sb-token'); window.location.href = '/login.html'; throw new Error('Sesión expirada'); }
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'Error'); }
+  return res;
+}
+
+async function uploadImage(file) {
+  const fd = new FormData();
+  fd.append('image', file);
+  const res = await fetch('/api/user/upload', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: fd });
+  if (!res.ok) throw new Error('Error al subir imagen');
+  return (await res.json()).url;
+}
+
+// ---- INIT ----
+async function init() {
+  if (!token) { window.location.href = '/login.html'; return; }
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) { localStorage.removeItem('sb-token'); window.location.href = '/login.html'; return; }
+
+    const res = await fetch('/api/user/profile', { headers: { 'Authorization': `Bearer ${token}` } });
+    if (!res.ok) { localStorage.removeItem('sb-token'); window.location.href = '/login.html'; return; }
+    currentProfile = await res.json();
+
+    if (!currentProfile.is_approved) {
+      document.getElementById('loading').style.display = 'none';
+      document.body.innerHTML += `
+        <div class="pending-screen">
+          <div class="icon">⏳</div>
+          <h2>Cuenta pendiente de aprobación</h2>
+          <p>El administrador revisará tu solicitud pronto.</p>
+          <button class="btn btn-gray" onclick="localStorage.removeItem('sb-token'); window.location.href='/login.html'">Cerrar Sesión</button>
+        </div>`;
+      return;
     }
 
-    function setupEventListeners() {
-      document.querySelectorAll('.tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-          document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-          tab.classList.add('active');
-          document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
-          if (tab.dataset.tab === 'groups') loadGroupsList();
-          if (tab.dataset.tab === 'tasks') loadTasks();
-          if (tab.dataset.tab === 'status-tasks') loadStatusTasks();
-        });
-      });
-      
-      document.getElementById('logout').onclick = () => {
-        localStorage.removeItem('sb-token');
-        window.location.href = '/login.html';
-      };
-      document.getElementById('refreshStatus').onclick = loadStatus;
-      document.getElementById('restartBtn').onclick = restartBot;
-      document.getElementById('clearSessionBtn').onclick = clearSession;
-      document.getElementById('saveSettings').onclick = saveAutoReply;
-      document.getElementById('loadGroups').onclick = loadGroupsList;
-      document.getElementById('newTaskBtn').onclick = () => openTaskModal();
-      document.getElementById('newStatusTaskBtn').onclick = () => openTaskModal('status');
-      document.getElementById('cancelModal').onclick = closeModal;
-      document.getElementById('taskForm').onsubmit = saveTask;
-      document.getElementById('showQrModalBtn').onclick = openQrModal;
-      document.getElementById('closeQrModal').onclick = () => document.getElementById('qrModal').style.display = 'none';
-      
-      document.getElementById('taskTargetType').onchange = toggleTargetType;
-      document.getElementById('taskScheduleType').onchange = toggleScheduleType;
-      document.getElementById('taskImage').onchange = previewTaskImage;
-      document.getElementById('autoReplyImage').onchange = previewAutoReplyImage;
-      
-      document.getElementById('qrModal').onclick = (e) => {
-        if (e.target === document.getElementById('qrModal')) {
-          document.getElementById('qrModal').style.display = 'none';
-        }
-      };
+    document.getElementById('topbarPhone').textContent = currentProfile.phone_number || '';
+    document.getElementById('phoneDisplay').textContent = currentProfile.phone_number || '—';
+    if (currentProfile.is_admin) document.getElementById('adminNavItem').style.display = 'flex';
+
+    setupNav();
+    setupEventListeners();
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    await loadStatus();
+    await loadSettings();
+    setInterval(loadStatus, 20000);
+  } catch (e) {
+    document.getElementById('loading').innerHTML = `❌ ${e.message}`;
+  }
+}
+
+// ---- NAV ----
+function setupNav() {
+  document.querySelectorAll('.nav-item[data-tab]').forEach(item => {
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+      item.classList.add('active');
+      const tab = item.dataset.tab;
+      document.getElementById(`tab-${tab}`).classList.add('active');
+      if (tab === 'groups') loadGroups();
+      if (tab === 'tasks') loadTasks();
+      if (tab === 'statusTasks') loadStatusTasks();
+    });
+  });
+}
+
+// ---- STATUS ----
+async function loadStatus() {
+  try {
+    const res = await api('/status');
+    const s = await res.json();
+    renderStatus(s);
+  } catch (e) {}
+}
+
+function renderStatus(s) {
+  const badge = document.getElementById('statusBadge');
+  const connectSection = document.getElementById('connectSection');
+  const connectingSection = document.getElementById('connectingSection');
+  const qrSection = document.getElementById('qrSection');
+  const pairingSection = document.getElementById('pairingSection');
+  const connectedSection = document.getElementById('connectedSection');
+
+  connectSection.style.display = 'none';
+  connectingSection.style.display = 'none';
+  qrSection.style.display = 'none';
+  pairingSection.style.display = 'none';
+  connectedSection.style.display = 'none';
+
+  if (s.connected) {
+    badge.textContent = '🟢 Conectado';
+    badge.className = 'badge badge-green';
+    connectedSection.style.display = 'block';
+    stopStatusPoller();
+  } else if (s.status === 'pairing' || s.pairingCode) {
+    badge.textContent = '🟡 Vinculando...';
+    badge.className = 'badge badge-yellow';
+    pairingSection.style.display = 'block';
+    const raw = s.pairingCode || '';
+    document.getElementById('pairingCodeDisplay').textContent = raw.match(/.{1,4}/g)?.join('-') || raw;
+    startStatusPoller();
+  } else if (s.status === 'qr_pending' && s.qrAvailable) {
+    badge.textContent = '🟡 Esperando vinculación';
+    badge.className = 'badge badge-yellow';
+    qrSection.style.display = 'block';
+    loadQR();
+    startStatusPoller();
+  } else if (s.status === 'connecting' || s.status === 'requesting_code') {
+    badge.textContent = '🔵 Conectando...';
+    badge.className = 'badge badge-blue';
+    connectingSection.style.display = 'block';
+    document.getElementById('connectingMsg').textContent =
+      s.status === 'requesting_code' ? 'Solicitando código, revisa tu WhatsApp...' : 'Estableciendo conexión...';
+    startStatusPoller();
+  } else {
+    badge.textContent = '🔴 Desconectado';
+    badge.className = 'badge badge-red';
+    connectSection.style.display = 'block';
+    stopStatusPoller();
+  }
+}
+
+async function loadQR() {
+  try {
+    const res = await fetch('/api/user/qr', { headers: { 'Authorization': `Bearer ${token}` } });
+    if (res.ok) document.getElementById('qrContainer').innerHTML = await res.text();
+  } catch (e) {}
+}
+
+function startStatusPoller() {
+  if (statusPollerInterval) return;
+  statusPollerInterval = setInterval(loadStatus, 4000);
+}
+function stopStatusPoller() {
+  if (statusPollerInterval) { clearInterval(statusPollerInterval); statusPollerInterval = null; }
+}
+
+// ---- CONNECT ----
+async function connectWithMethod(method) {
+  try {
+    renderStatus({ status: 'connecting' });
+    await api('/restart', 'POST', { method });
+    toast(method === 'pairing' ? 'Solicitando código, espera unos segundos...' : 'Generando QR...', 'info', 4000);
+    setTimeout(loadStatus, 3000);
+  } catch (e) {
+    toast(e.message, 'error');
+    await loadStatus();
+  }
+}
+
+// ---- SETTINGS ----
+async function loadSettings() {
+  const res = await api('/settings');
+  const s = await res.json();
+  const ar = s.autoReply || {};
+  document.getElementById('autoReplyActive').checked = ar.active || false;
+  document.getElementById('autoReplyText').value = ar.text || '';
+  document.getElementById('startHour').value = ar.startHour ?? 22;
+  document.getElementById('endHour').value = ar.endHour ?? 8;
+  if (ar.mediaUrl) {
+    document.getElementById('autoReplyPreview').src = ar.mediaUrl;
+    document.getElementById('autoReplyPreview').style.display = 'block';
+  }
+}
+
+async function saveAutoReply() {
+  try {
+    const btn = document.getElementById('saveAutoReplyBtn');
+    btn.disabled = true;
+    const cur = await (await api('/settings')).json();
+    let mediaUrl = cur.autoReply?.mediaUrl;
+    const file = document.getElementById('autoReplyImage').files[0];
+    if (file) mediaUrl = await uploadImage(file);
+    const settings = {
+      autoReply: {
+        active: document.getElementById('autoReplyActive').checked,
+        text: document.getElementById('autoReplyText').value,
+        startHour: parseInt(document.getElementById('startHour').value) || 0,
+        endHour: parseInt(document.getElementById('endHour').value) || 0,
+        mediaUrl
+      },
+      tasks: cur.tasks || [],
+      statusTasks: cur.statusTasks || []
+    };
+    await api('/settings', 'POST', settings);
+    toast('✅ Configuración guardada');
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    document.getElementById('saveAutoReplyBtn').disabled = false;
+  }
+}
+
+// ---- GROUPS ----
+async function loadGroups() {
+  const container = document.getElementById('groupsList');
+  container.innerHTML = '<p style="color:#888; font-size:0.9em;">Cargando...</p>';
+  try {
+    const res = await api('/groups');
+    groupsCache = await res.json();
+    if (!groupsCache.length) {
+      container.innerHTML = '<div class="empty-state"><div class="icon">👥</div><p>No perteneces a ningún grupo</p></div>';
+      return;
     }
+    container.innerHTML = groupsCache.map(g => `
+      <div class="group-item">
+        <div class="group-icon">👥</div>
+        <div>
+          <div class="group-name">${g.name}</div>
+          <div class="group-id">${g.id}</div>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    container.innerHTML = `<p style="color:red;">Error: ${e.message}</p>`;
+  }
+}
 
-    async function loadStatus() {
-      try {
-        const res = await apiCall('/status');
-        const data = await res.json();
-        const statusEl = document.getElementById('statusText');
+// ---- TASKS ----
+async function loadTasks() {
+  const res = await api('/tasks');
+  const tasks = await res.json();
+  renderTasksTable(tasks, 'task', document.getElementById('tasksContainer'));
+}
 
-        if (data.connected) {
-          statusEl.textContent = '🟢 Conectado';
-          document.getElementById('qrContainer').innerHTML = '';
-          document.getElementById('codeContainer').innerHTML = '';
-          document.getElementById('showQrModalBtn').style.display = 'none';
-        } else if (data.pairingCode) {
-          statusEl.textContent = '🟡 Código de emparejamiento disponible';
-          document.getElementById('qrContainer').innerHTML = '';
-          document.getElementById('codeContainer').innerHTML = `
-            <p>🔢 Código: <strong style="font-size:1.6em;">${data.pairingCode.match(/.{1,4}/g).join('-')}</strong></p>
-            <p style="color:green;">✔️ Ingresa este código en WhatsApp (Ajustes > Dispositivos vinculados > Vincular con código)</p>
-          `;
-          document.getElementById('showQrModalBtn').style.display = 'none';
-        } else if (data.qrAvailable) {
-          statusEl.textContent = '🟡 QR disponible - Escanea para vincular';
-          const qrRes = await fetch('/api/user/qr', { headers: { 'Authorization': `Bearer ${token}` } });
-          if (qrRes.ok) {
-            const qrHtml = await qrRes.text();
-            document.getElementById('qrContainer').innerHTML = qrHtml;
-            document.getElementById('showQrModalBtn').style.display = 'inline-block';
-          } else {
-            document.getElementById('qrContainer').innerHTML = '<p>Error al cargar QR</p>';
-          }
-          document.getElementById('codeContainer').innerHTML = '';
-        } else {
-          statusEl.textContent = '🔴 Desconectado';
-          document.getElementById('qrContainer').innerHTML = '<p>Haz clic en "Conectar WhatsApp" para comenzar.</p>';
-          document.getElementById('codeContainer').innerHTML = '';
-          document.getElementById('showQrModalBtn').style.display = 'none';
-        }
-      } catch (e) {
-        showError('Error al cargar estado: ' + e.message);
-      }
+async function loadStatusTasks() {
+  const res = await api('/status-tasks');
+  const tasks = await res.json();
+  renderTasksTable(tasks, 'status', document.getElementById('statusTasksContainer'));
+}
+
+function formatSchedule(task) {
+  if (task.scheduleType === 'interval') return `Cada ${task.intervalMinutes} min`;
+  if (task.scheduleType === 'cron' && task.cronExpression) {
+    const [min, hr] = task.cronExpression.split(' ');
+    let h = parseInt(hr); if (h === 24) h = 0;
+    return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')} diario`;
+  }
+  return '—';
+}
+
+function renderTasksTable(tasks, type, container) {
+  if (!tasks.length) {
+    container.innerHTML = `<div class="empty-state"><div class="icon">${type === 'task' ? '📋' : '📸'}</div><p>No hay ${type === 'task' ? 'tareas' : 'estados'} programados</p></div>`;
+    return;
+  }
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Nombre</th>
+          <th>${type === 'task' ? 'Destino' : 'Tipo'}</th>
+          <th>Contenido</th>
+          <th>Programación</th>
+          <th>Estado</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tasks.map(t => `
+          <tr>
+            <td><strong>${t.name || 'Sin nombre'}</strong></td>
+            <td>${type === 'task' ? (t.target?.includes('@g.us') ? '👥 Grupo' : '💬 Privado') : '📸 Estado'}</td>
+            <td>${t.mediaUrl ? '🖼️ Imagen' : '📝 Texto'}</td>
+            <td><span class="badge badge-blue">${formatSchedule(t)}</span></td>
+            <td>${t.active ? '<span class="badge badge-green">Activa</span>' : '<span class="badge badge-red">Pausada</span>'}</td>
+            <td style="white-space:nowrap;">
+              <button class="btn btn-gray btn-sm" onclick="testTask('${t.id}','${type}')">🧪</button>
+              <button class="btn btn-blue btn-sm" onclick="editTask('${t.id}','${type}')">✏️</button>
+              <button class="btn btn-red btn-sm" onclick="deleteTask('${t.id}','${type}')">🗑️</button>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+// ---- TASK MODAL ----
+let currentTaskType = 'task';
+
+function openTaskModal(type = 'task', task = null) {
+  currentTaskType = type;
+  document.getElementById('taskTypeField').value = type;
+  document.getElementById('taskId').value = task?.id || '';
+  document.getElementById('taskName').value = task?.name || '';
+  document.getElementById('taskMessage').value = task?.message || '';
+  document.getElementById('taskActive').checked = task?.active ?? true;
+  document.getElementById('taskImage').value = '';
+  document.getElementById('taskImagePreview').style.display = 'none';
+  document.getElementById('taskCurrentImage').textContent = task?.mediaUrl ? '📎 Imagen actual cargada (deja vacío para conservarla)' : '';
+  document.getElementById('taskImagePreview').src = '';
+
+  document.getElementById('modalTitle').textContent = task ? `Editar ${type === 'task' ? 'Tarea' : 'Estado'}` : `Nueva ${type === 'task' ? 'Tarea' : 'Estado'}`;
+  document.getElementById('taskTargetSection').style.display = type === 'task' ? 'block' : 'none';
+
+  if (task?.scheduleType) {
+    document.getElementById('taskScheduleType').value = task.scheduleType;
+    if (task.scheduleType === 'interval') {
+      document.getElementById('taskInterval').value = task.intervalMinutes || 60;
+    } else if (task.cronExpression) {
+      const [min, hr] = task.cronExpression.split(' ');
+      document.getElementById('taskHour').value = hr;
+      document.getElementById('taskMinute').value = min;
     }
+  } else {
+    document.getElementById('taskScheduleType').value = 'cron';
+    document.getElementById('taskHour').value = '';
+    document.getElementById('taskMinute').value = '';
+  }
+  toggleScheduleType();
 
-    async function restartBot() {
-      try {
-        const btn = document.getElementById('restartBtn');
-        btn.disabled = true;
-        btn.textContent = '⏳ Conectando...';
-        await apiCall('/restart', 'POST');
-        btn.textContent = '✅ QR generado';
-        setTimeout(() => {
-          btn.textContent = '📷 Conectar WhatsApp (QR)';
-          btn.disabled = false;
-        }, 3000);
-        setTimeout(loadStatus, 3000);
-      } catch (e) {
-        showError(e.message);
-        document.getElementById('restartBtn').disabled = false;
-        document.getElementById('restartBtn').textContent = '📷 Conectar WhatsApp (QR)';
-      }
+  if (task?.target) {
+    if (task.target.includes('@g.us')) {
+      document.getElementById('taskTargetType').value = 'group';
+      populateGroupSelect(task.target);
+    } else {
+      document.getElementById('taskTargetType').value = 'private';
+      document.getElementById('taskPrivateNumber').value = task.target.replace('@s.whatsapp.net', '');
     }
+  }
+  toggleTargetType();
 
-    async function clearSession() {
-      if (!confirm('¿Eliminar sesión por completo?')) return;
-      try {
-        await apiCall('/clear-session', 'POST');
-        alert('Sesión eliminada. Recargando...');
-        location.reload();
-      } catch (e) {
-        showError(e.message);
-      }
+  document.getElementById('taskModal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('taskModal').classList.remove('open');
+}
+
+function toggleTargetType() {
+  const val = document.getElementById('taskTargetType').value;
+  document.getElementById('privateTargetDiv').style.display = val === 'private' ? 'flex' : 'none';
+  document.getElementById('groupTargetDiv').style.display = val === 'group' ? 'flex' : 'none';
+  if (val === 'group') populateGroupSelect();
+}
+
+function toggleScheduleType() {
+  const val = document.getElementById('taskScheduleType').value;
+  document.getElementById('cronSection').style.display = val === 'cron' ? 'flex' : 'none';
+  document.getElementById('intervalSection').style.display = val === 'interval' ? 'flex' : 'none';
+}
+
+async function populateGroupSelect(selectedId = null) {
+  if (!groupsCache.length) {
+    try { const r = await api('/groups'); groupsCache = await r.json(); } catch (e) { return; }
+  }
+  const sel = document.getElementById('taskGroupSelect');
+  sel.innerHTML = groupsCache.map(g => `<option value="${g.id}" ${g.id === selectedId ? 'selected' : ''}>${g.name}</option>`).join('');
+}
+
+async function saveTask() {
+  const type = document.getElementById('taskTypeField').value;
+  const scheduleType = document.getElementById('taskScheduleType').value;
+
+  let hour = parseInt(document.getElementById('taskHour').value) || 0;
+  const minute = parseInt(document.getElementById('taskMinute').value) || 0;
+  // Military time: 24 = 0 for cron
+  const cronHour = hour === 24 ? 0 : hour;
+  const cronExpression = `${minute} ${cronHour}`;
+
+  let target = 'status@broadcast';
+  if (type === 'task') {
+    if (document.getElementById('taskTargetType').value === 'private') {
+      const num = document.getElementById('taskPrivateNumber').value.replace(/\D/g, '');
+      if (!num) { toast('Ingresa un número válido', 'error'); return; }
+      target = `${num}@s.whatsapp.net`;
+    } else {
+      target = document.getElementById('taskGroupSelect').value;
+      if (!target) { toast('Selecciona un grupo', 'error'); return; }
     }
+  }
 
-    function openQrModal() {
-      const qrImg = document.querySelector('#qrContainer img');
-      if (qrImg) {
-        document.getElementById('qrModalImage').src = qrImg.src;
-        document.getElementById('qrModal').style.display = 'block';
-      }
+  const taskId = document.getElementById('taskId').value;
+
+  // Get current settings to preserve existing mediaUrl
+  const curSettingsRes = await api('/settings');
+  const curSettings = await curSettingsRes.json();
+  const existingTasks = type === 'task' ? (curSettings.tasks || []) : (curSettings.statusTasks || []);
+  const existingTask = taskId ? existingTasks.find(t => t.id === taskId) : null;
+  let mediaUrl = existingTask?.mediaUrl || null;
+
+  const file = document.getElementById('taskImage').files[0];
+  if (file) {
+    try {
+      const btn = document.getElementById('saveTaskBtn');
+      btn.disabled = true; btn.textContent = '⏳ Subiendo imagen...';
+      mediaUrl = await uploadImage(file);
+    } catch (e) {
+      toast('Error al subir imagen: ' + e.message, 'error');
+      document.getElementById('saveTaskBtn').disabled = false;
+      document.getElementById('saveTaskBtn').textContent = '💾 Guardar';
+      return;
     }
+  }
 
-    // ---------- AUTO-REPLY ----------
-    async function loadSettings() {
-      const res = await apiCall('/settings');
-      const data = await res.json();
-      const ar = data.autoReply || {};
-      document.getElementById('autoReplyActive').checked = ar.active || false;
-      document.getElementById('autoReplyText').value = ar.text || '';
-      document.getElementById('startHour').value = ar.startHour ?? 23;
-      document.getElementById('endHour').value = ar.endHour ?? 8;
-      if (ar.mediaUrl) {
-        document.getElementById('autoReplyPreview').src = ar.mediaUrl;
-        document.getElementById('autoReplyPreview').style.display = 'block';
-      }
+  const task = {
+    id: taskId || undefined,
+    name: document.getElementById('taskName').value,
+    message: document.getElementById('taskMessage').value,
+    target,
+    scheduleType,
+    cronExpression: scheduleType === 'cron' ? cronExpression : null,
+    intervalMinutes: scheduleType === 'interval' ? parseInt(document.getElementById('taskInterval').value) : null,
+    active: document.getElementById('taskActive').checked,
+    mediaUrl,
+  };
+
+  const endpoint = type === 'task' ? '/tasks' : '/status-tasks';
+  try {
+    await api(endpoint, 'POST', { task });
+    toast('✅ Guardado correctamente');
+    closeModal();
+    if (type === 'task') loadTasks(); else loadStatusTasks();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    document.getElementById('saveTaskBtn').disabled = false;
+    document.getElementById('saveTaskBtn').textContent = '💾 Guardar';
+  }
+}
+
+window.testTask = async (id, type) => {
+  const endpoint = type === 'task' ? `/tasks/${id}/test` : `/status-tasks/${id}/test`;
+  try {
+    await api(endpoint, 'POST');
+    toast('✅ Mensaje de prueba enviado');
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+window.editTask = async (id, type) => {
+  const endpoint = type === 'task' ? '/tasks' : '/status-tasks';
+  const res = await api(endpoint);
+  const tasks = await res.json();
+  const task = tasks.find(t => t.id === id);
+  if (task) openTaskModal(type, task);
+};
+
+window.deleteTask = async (id, type) => {
+  if (!confirm('¿Eliminar esta tarea?')) return;
+  const endpoint = type === 'task' ? `/tasks/${id}` : `/status-tasks/${id}`;
+  try {
+    await api(endpoint, 'DELETE');
+    toast('Tarea eliminada');
+    if (type === 'task') loadTasks(); else loadStatusTasks();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+// ---- EVENT LISTENERS ----
+function setupEventListeners() {
+  document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('sb-token'); window.location.href = '/login.html'; };
+  document.getElementById('refreshStatusBtn').onclick = loadStatus;
+  document.getElementById('connectQR').onclick = () => connectWithMethod('qr');
+  document.getElementById('connectCode').onclick = () => connectWithMethod('pairing');
+  document.getElementById('clearSessionBtn').onclick = async () => {
+    if (!confirm('¿Desconectar y limpiar la sesión de WhatsApp?')) return;
+    try {
+      await api('/clear-session', 'POST');
+      toast('Sesión limpiada. Reconecta cuando quieras.', 'info');
+      await loadStatus();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  document.getElementById('loadGroupsBtn').onclick = loadGroups;
+  document.getElementById('newTaskBtn').onclick = () => openTaskModal('task');
+  document.getElementById('newStatusTaskBtn').onclick = () => openTaskModal('status');
+  document.getElementById('cancelModal').onclick = closeModal;
+  document.getElementById('saveTaskBtn').onclick = saveTask;
+  document.getElementById('saveAutoReplyBtn').onclick = saveAutoReply;
+  document.getElementById('taskTargetType').onchange = toggleTargetType;
+  document.getElementById('taskScheduleType').onchange = toggleScheduleType;
+  document.getElementById('taskImage').onchange = () => {
+    const file = document.getElementById('taskImage').files[0];
+    if (file) {
+      const r = new FileReader();
+      r.onload = e => { const img = document.getElementById('taskImagePreview'); img.src = e.target.result; img.style.display = 'block'; };
+      r.readAsDataURL(file);
     }
-
-    async function saveAutoReply() {
-      try {
-        const current = await (await apiCall('/settings')).json();
-        let mediaUrl = current.autoReply?.mediaUrl;
-        const imageFile = document.getElementById('autoReplyImage').files[0];
-        if (imageFile) mediaUrl = await uploadImage(imageFile);
-        
-        const settings = {
-          autoReply: {
-            active: document.getElementById('autoReplyActive').checked,
-            text: document.getElementById('autoReplyText').value,
-            startHour: parseInt(document.getElementById('startHour').value),
-            endHour: parseInt(document.getElementById('endHour').value),
-            mediaUrl
-          },
-          tasks: current.tasks || [],
-          statusTasks: current.statusTasks || []
-        };
-        await apiCall('/settings', 'POST', settings);
-        alert('✅ Configuración guardada');
-      } catch (e) {
-        showError(e.message);
-      }
+  };
+  document.getElementById('autoReplyImage').onchange = () => {
+    const file = document.getElementById('autoReplyImage').files[0];
+    if (file) {
+      const r = new FileReader();
+      r.onload = e => { const img = document.getElementById('autoReplyPreview'); img.src = e.target.result; img.style.display = 'block'; };
+      r.readAsDataURL(file);
     }
+  };
+  document.getElementById('taskModal').addEventListener('click', e => {
+    if (e.target === document.getElementById('taskModal')) closeModal();
+  });
+}
 
-    function previewAutoReplyImage() {
-      const file = document.getElementById('autoReplyImage').files[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = e => {
-          document.getElementById('autoReplyPreview').src = e.target.result;
-          document.getElementById('autoReplyPreview').style.display = 'block';
-        };
-        reader.readAsDataURL(file);
-      }
-    }
-
-    // ---------- GRUPOS ----------
-    async function loadGroupsList() {
-      try {
-        const res = await apiCall('/groups');
-        groupsCache = await res.json();
-        const html = groupsCache.map(g => `<p><strong>${g.name}</strong> (${g.id})</p>`).join('');
-        document.getElementById('groupsList').innerHTML = html || '<p>No se encontraron grupos</p>';
-      } catch (e) {
-        showError(e.message);
-      }
-    }
-
-    async function populateGroupSelect() {
-      if (groupsCache.length === 0) {
-        try {
-          const res = await apiCall('/groups');
-          groupsCache = await res.json();
-        } catch (e) {
-          return;
-        }
-      }
-      const select = document.getElementById('taskGroupSelect');
-      select.innerHTML = groupsCache.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
-    }
-
-    // ---------- TAREAS Y ESTADOS ----------
-    async function loadTasks() {
-      const res = await apiCall('/tasks');
-      const tasks = await res.json();
-      renderTasksTable(tasks, 'tasks');
-    }
-
-    async function loadStatusTasks() {
-      const res = await apiCall('/status-tasks');
-      const tasks = await res.json();
-      renderTasksTable(tasks, 'status');
-    }
-
-    function renderTasksTable(tasks, type) {
-      const tbody = document.querySelector(`#${type === 'tasks' ? 'tasksTable' : 'statusTasksTable'} tbody`);
-      tbody.innerHTML = '';
-      tasks.forEach(task => {
-        const tr = document.createElement('tr');
-        const schedule = task.scheduleType === 'cron' 
-          ? `${task.cronExpression || '0 0 * * *'}`
-          : `Cada ${task.intervalMinutes} min`;
-        tr.innerHTML = `
-          <td>${task.name || 'Sin nombre'}</td>
-          <td>${type === 'tasks' ? (task.target.includes('@g.us') ? 'Grupo' : 'Privado') : 'Estado'}</td>
-          <td>${task.mediaUrl ? '📷 Imagen' : '📝 Texto'}</td>
-          <td>${schedule}</td>
-          <td>${task.active ? '✅' : '❌'}</td>
-          <td>
-            <button class="test-btn" data-id="${task.id}" data-type="${type}">🧪 Probar</button>
-            <button class="edit-btn" data-id="${task.id}" data-type="${type}">✏️</button>
-            <button class="delete-btn" data-id="${task.id}" data-type="${type}">🗑️</button>
-          </td>
-        `;
-        tbody.appendChild(tr);
-      });
-      
-      document.querySelectorAll('.test-btn').forEach(b => b.addEventListener('click', testTask));
-      document.querySelectorAll('.edit-btn').forEach(b => b.addEventListener('click', editTask));
-      document.querySelectorAll('.delete-btn').forEach(b => b.addEventListener('click', deleteTask));
-    }
-
-    function openTaskModal(type = 'task', task = null) {
-      document.getElementById('modalTitle').textContent = task ? 'Editar' : 'Nueva ' + (type === 'task' ? 'Tarea' : 'Estado');
-      document.getElementById('taskType').value = type;
-      document.getElementById('taskId').value = task?.id || '';
-      
-      const targetSection = document.getElementById('targetSection');
-      targetSection.style.display = type === 'task' ? 'block' : 'none';
-      
-      if (task) {
-        document.getElementById('taskName').value = task.name || '';
-        document.getElementById('taskMessage').value = task.message || '';
-        if (task.mediaUrl) {
-          document.getElementById('taskImagePreview').src = task.mediaUrl;
-          document.getElementById('taskImagePreview').style.display = 'block';
-        }
-        document.getElementById('taskScheduleType').value = task.scheduleType || 'cron';
-        if (task.scheduleType === 'cron') {
-          const [min, hour] = (task.cronExpression || '0 0').split(' ');
-          document.getElementById('taskHour').value = hour || 0;
-          document.getElementById('taskMinute').value = min || 0;
-        } else {
-          document.getElementById('taskInterval').value = task.intervalMinutes || 60;
-        }
-        document.getElementById('taskActive').checked = task.active !== false;
-        
-        if (type === 'task') {
-          if (task.target.includes('@g.us')) {
-            document.getElementById('taskTargetType').value = 'group';
-            document.getElementById('privateTargetDiv').style.display = 'none';
-            document.getElementById('groupTargetDiv').style.display = 'block';
-            populateGroupSelect().then(() => {
-              document.getElementById('taskGroupSelect').value = task.target;
-            });
-          } else {
-            document.getElementById('taskTargetType').value = 'private';
-            document.getElementById('taskPrivateNumber').value = task.target.replace('@s.whatsapp.net', '');
-          }
-        }
-      } else {
-        document.getElementById('taskForm').reset();
-        document.getElementById('taskImagePreview').style.display = 'none';
-        document.getElementById('taskScheduleType').value = 'cron';
-        document.getElementById('taskActive').checked = true;
-        if (type === 'task') {
-          document.getElementById('taskTargetType').value = 'private';
-          toggleTargetType();
-        }
-      }
-      toggleScheduleType();
-      document.getElementById('taskModal').style.display = 'block';
-    }
-
-    function closeModal() {
-      document.getElementById('taskModal').style.display = 'none';
-    }
-
-    function toggleTargetType() {
-      const type = document.getElementById('taskTargetType').value;
-      document.getElementById('privateTargetDiv').style.display = type === 'private' ? 'block' : 'none';
-      document.getElementById('groupTargetDiv').style.display = type === 'group' ? 'block' : 'none';
-      if (type === 'group') populateGroupSelect();
-    }
-
-    function toggleScheduleType() {
-      const type = document.getElementById('taskScheduleType').value;
-      document.getElementById('cronDiv').style.display = type === 'cron' ? 'block' : 'none';
-      document.getElementById('intervalDiv').style.display = type === 'interval' ? 'block' : 'none';
-    }
-
-    function previewTaskImage() {
-      const file = document.getElementById('taskImage').files[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = e => {
-          document.getElementById('taskImagePreview').src = e.target.result;
-          document.getElementById('taskImagePreview').style.display = 'block';
-        };
-        reader.readAsDataURL(file);
-      }
-    }
-
-    async function saveTask(e) {
-      e.preventDefault();
-      const type = document.getElementById('taskType').value;
-      const id = document.getElementById('taskId').value;
-      const name = document.getElementById('taskName').value;
-      const message = document.getElementById('taskMessage').value;
-      const scheduleType = document.getElementById('taskScheduleType').value;
-      const active = document.getElementById('taskActive').checked;
-      
-      let target;
-      if (type === 'task') {
-        const targetType = document.getElementById('taskTargetType').value;
-        target = targetType === 'private' 
-          ? document.getElementById('taskPrivateNumber').value + '@s.whatsapp.net'
-          : document.getElementById('taskGroupSelect').value;
-      } else {
-        target = 'status@broadcast';
-      }
-      
-      let cronExpression = null, intervalMinutes = null;
-      if (scheduleType === 'cron') {
-        const hour = document.getElementById('taskHour').value.padStart(2, '0');
-        const minute = document.getElementById('taskMinute').value.padStart(2, '0');
-        cronExpression = `${minute} ${hour} * * *`;
-      } else {
-        intervalMinutes = parseInt(document.getElementById('taskInterval').value);
-      }
-      
-      let mediaUrl = document.getElementById('taskImagePreview').style.display === 'block' 
-        ? document.getElementById('taskImagePreview').src : null;
-      const imageFile = document.getElementById('taskImage').files[0];
-      if (imageFile) mediaUrl = await uploadImage(imageFile);
-      
-      const task = { id, name, target, message, mediaUrl, scheduleType, cronExpression, intervalMinutes, active };
-      
-      const endpoint = type === 'task' ? '/tasks' : '/status-tasks';
-      await apiCall(endpoint, 'POST', { task });
-      closeModal();
-      if (type === 'task') loadTasks(); else loadStatusTasks();
-    }
-
-    async function editTask(e) {
-      const id = e.target.dataset.id;
-      const type = e.target.dataset.type;
-      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
-      const res = await apiCall(endpoint);
-      const tasks = await res.json();
-      const task = tasks.find(t => t.id === id);
-      if (task) openTaskModal(type === 'tasks' ? 'task' : 'status', task);
-    }
-
-    async function deleteTask(e) {
-      if (!confirm('¿Eliminar?')) return;
-      const id = e.target.dataset.id;
-      const type = e.target.dataset.type;
-      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
-      await apiCall(`${endpoint}/${id}`, 'DELETE');
-      if (type === 'tasks') loadTasks(); else loadStatusTasks();
-    }
-
-    async function testTask(e) {
-      const id = e.target.dataset.id;
-      const type = e.target.dataset.type;
-      const endpoint = type === 'tasks' ? '/tasks' : '/status-tasks';
-      try {
-        await apiCall(`${endpoint}/${id}/test`, 'POST');
-        alert('✅ Mensaje enviado correctamente');
-      } catch (error) {
-        showError('Error al probar: ' + error.message);
-      }
-    }
-
-    main();
-  </script>
+init();
+</script>
 </body>
 </html>
