@@ -18,6 +18,7 @@ async function startUserInstance(userId, phoneNumber) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
   console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone}`);
 
+  // Cancelar timer previo
   const existing = instances.get(userId);
   if (existing?.reconnectTimer) {
     clearTimeout(existing.reconnectTimer);
@@ -38,12 +39,11 @@ async function startUserInstance(userId, phoneNumber) {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'debug' })),
     },
-    browser: ['Mac OS', 'Safari', '10.15.7'],
+    browser: Browsers.ubuntu('Chrome'), // Exactamente como en Replit
     markOnlineOnConnect: true,
     syncFullHistory: false,
-    connectTimeoutMs: 120000,           // más tiempo para escanear QR
+    connectTimeoutMs: 120000,
     defaultQueryTimeoutMs: 120000,
-    qrTimeout: 120000,                  // tiempo máximo del QR
   });
 
   const instanceState = {
@@ -55,32 +55,32 @@ async function startUserInstance(userId, phoneNumber) {
     pairingCode: null,
     isConnected: false,
     reconnectTimer: null,
-    qrGeneratedAt: null,
+    reconnectAttempts: 0,
   };
   instances.set(userId, instanceState);
 
   const userBot = createUserBot(userId, sock);
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect, qr, pairingCode } = update;
     const inst = instances.get(userId);
     if (!inst) return;
 
-    console.log(`[User ${userId}] 📡 Connection update: connection=${connection}, qr=${!!qr}`);
+    console.log(`[User ${userId}] 📡 connection.update: connection=${connection}, qr=${!!qr}, pairingCode=${pairingCode}`);
 
     if (qr) {
+      console.log(`[User ${userId}] 🖼️ QR recibido, generando base64...`);
       inst.qrBase64 = await QRCode.toDataURL(qr);
+      inst.pairingCode = null;
       inst.status = 'qr_pending';
-      console.log(`[User ${userId}] 🖼️ QR generado. Solicitando código de emparejamiento...`);
-      
-      // Pedir el código de forma automática e inmediata al recibir el evento QR
-      try {
-         const code = await sock.requestPairingCode(cleanPhone);
-         inst.pairingCode = code;
-         console.log(`[User ${userId}] 🔑 Código de emparejamiento generado automáticamente: ${code}`);
-      } catch (err) {
-         console.error(`[User ${userId}] ❌ Error pidiendo código:`, err);
-      }
+      console.log(`[User ${userId}] ✅ QR base64 listo (longitud: ${inst.qrBase64.length})`);
+    }
+
+    if (pairingCode) {
+      console.log(`[User ${userId}] 🔢 Código de emparejamiento automático: ${pairingCode}`);
+      inst.pairingCode = pairingCode;
+      inst.qrBase64 = null;
+      inst.status = 'pairing';
     }
 
     if (connection === 'open') {
@@ -88,7 +88,8 @@ async function startUserInstance(userId, phoneNumber) {
       inst.qrBase64 = null;
       inst.pairingCode = null;
       inst.status = 'connected';
-      console.log(`[User ${userId}] ✅ Conectado a WhatsApp`);
+      inst.reconnectAttempts = 0;
+      console.log(`[User ${userId}] ✅✅ CONECTADO a WhatsApp`);
 
       const settings = await getSettings(userId);
       if (!settings) {
@@ -104,19 +105,17 @@ async function startUserInstance(userId, phoneNumber) {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      // Si es 408 (QR timeout) y nunca se escaneó, reintentar con backoff
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       
-      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
+      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}, error=${lastDisconnect?.error?.message}`);
       inst.isConnected = false;
       inst.status = 'disconnected';
 
       if (shouldReconnect) {
-        // Backoff progresivo: 10s, 20s, 30s...
         const attempt = inst.reconnectAttempts || 0;
         const delayMs = Math.min(10000 + attempt * 5000, 60000);
         inst.reconnectAttempts = attempt + 1;
-        console.log(`[User ${userId}] 🔄 Reintentando en ${delayMs/1000}s...`);
+        console.log(`[User ${userId}] 🔄 Reintentando en ${delayMs/1000}s (intento ${attempt+1})...`);
         inst.reconnectTimer = setTimeout(() => {
           startUserInstance(userId, cleanPhone);
         }, delayMs);
