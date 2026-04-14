@@ -50,20 +50,10 @@
         <p>Número vinculado: <strong><span id="phoneDisplay"></span></strong></p>
         
         <div style="margin: 15px 0;">
-          <button id="restartBot" style="background:#ffc107;">⚠️ Reiniciar Conexión</button>
+          <button id="restartBtn" style="background:#25D366; color:white; font-weight:bold; padding:10px 20px;">
+            📷 Conectar WhatsApp (QR)
+          </button>
           <button id="clearSessionBtn" style="background:#dc3545; color:white;">🧹 Limpiar sesión</button>
-        </div>
-        
-        <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px;">
-          <h3>🔗 Vincular WhatsApp</h3>
-          <p>Elige un método para vincular tu número:</p>
-          <button id="showQrBtn" style="background:#25D366; color:white; font-weight:bold; padding:10px 20px;">
-            📷 Vincular con QR
-          </button>
-          <button id="requestPairingBtn" style="background:#075E54; color:white; font-weight:bold; padding:10px 20px;">
-            🔢 Vincular con Código
-          </button>
-          <p style="font-size:0.9em; margin-top:10px;">Nota: Primero haz clic en "Reiniciar Conexión" si el bot está desconectado.</p>
         </div>
         
         <div id="qrContainer" style="text-align:center; margin:15px 0;"></div>
@@ -183,14 +173,11 @@
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-    // ---------- CONFIGURACIÓN ----------
     const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
     let token = localStorage.getItem('sb-token');
     let currentProfile = null;
     let groupsCache = [];
-    let manualPairingCode = null;
 
-    // ---------- UTILIDADES ----------
     function showError(msg) {
       const el = document.getElementById('errorMessage');
       el.textContent = '❌ ' + msg;
@@ -214,14 +201,12 @@
         },
         body: body ? JSON.stringify(body) : null
       });
-      
       if (res.status === 401) {
         localStorage.removeItem('sb-token');
         showInfo('Sesión expirada. Redirigiendo...');
         setTimeout(() => window.location.href = '/login.html', 1500);
         throw new Error('Sesión expirada');
       }
-      
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Error en la solicitud');
@@ -247,7 +232,6 @@
       return data.url;
     }
 
-    // ---------- INICIALIZACIÓN ----------
     async function main() {
       const loadingDiv = document.getElementById('loading');
       try {
@@ -256,8 +240,6 @@
           setTimeout(() => window.location.href = '/login.html', 1500);
           return;
         }
-        
-        console.log('🔑 Verificando token...');
         const { data: { user }, error } = await supabase.auth.getUser(token);
         if (error || !user) {
           localStorage.removeItem('sb-token');
@@ -265,8 +247,6 @@
           setTimeout(() => window.location.href = '/login.html', 2000);
           return;
         }
-        
-        console.log('👤 Obteniendo perfil...');
         const profileRes = await fetch('/api/user/profile', { headers: { 'Authorization': `Bearer ${token}` } });
         if (profileRes.status === 401) {
           localStorage.removeItem('sb-token');
@@ -315,7 +295,6 @@
     }
 
     function setupEventListeners() {
-      // Pestañas
       document.querySelectorAll('.tab').forEach(tab => {
         tab.addEventListener('click', () => {
           document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -333,10 +312,8 @@
         window.location.href = '/login.html';
       };
       document.getElementById('refreshStatus').onclick = loadStatus;
-      document.getElementById('restartBot').onclick = restartBot;
+      document.getElementById('restartBtn').onclick = restartBot;
       document.getElementById('clearSessionBtn').onclick = clearSession;
-      document.getElementById('showQrBtn').onclick = showQrCode;
-      document.getElementById('requestPairingBtn').onclick = requestPairingCode;
       document.getElementById('saveSettings').onclick = saveAutoReply;
       document.getElementById('loadGroups').onclick = loadGroupsList;
       document.getElementById('newTaskBtn').onclick = () => openTaskModal();
@@ -358,7 +335,6 @@
       };
     }
 
-    // ---------- ESTADO Y CONEXIÓN ----------
     async function loadStatus() {
       try {
         const res = await apiCall('/status');
@@ -370,9 +346,16 @@
           document.getElementById('qrContainer').innerHTML = '';
           document.getElementById('codeContainer').innerHTML = '';
           document.getElementById('showQrModalBtn').style.display = 'none';
+        } else if (data.pairingCode) {
+          statusEl.textContent = '🟡 Código de emparejamiento disponible';
+          document.getElementById('qrContainer').innerHTML = '';
+          document.getElementById('codeContainer').innerHTML = `
+            <p>🔢 Código: <strong style="font-size:1.6em;">${data.pairingCode.match(/.{1,4}/g).join('-')}</strong></p>
+            <p style="color:green;">✔️ Ingresa este código en WhatsApp (Ajustes > Dispositivos vinculados > Vincular con código)</p>
+          `;
+          document.getElementById('showQrModalBtn').style.display = 'none';
         } else if (data.qrAvailable) {
           statusEl.textContent = '🟡 QR disponible - Escanea para vincular';
-          // El endpoint /qr ya devuelve la etiqueta <img> completa
           const qrRes = await fetch('/api/user/qr', { headers: { 'Authorization': `Bearer ${token}` } });
           if (qrRes.ok) {
             const qrHtml = await qrRes.text();
@@ -382,20 +365,9 @@
             document.getElementById('qrContainer').innerHTML = '<p>Error al cargar QR</p>';
           }
           document.getElementById('codeContainer').innerHTML = '';
-        } else if (data.pairingCode || manualPairingCode) {
-          statusEl.textContent = '🟡 Esperando vinculación con código';
-          document.getElementById('qrContainer').innerHTML = '';
-          const code = data.pairingCode || manualPairingCode;
-          if (code) {
-            document.getElementById('codeContainer').innerHTML = `
-              <p>🔢 Código: <strong style="font-size:1.6em;">${code.match(/.{1,4}/g).join('-')}</strong></p>
-              <p style="color:green;">✔️ Ingresa este código en WhatsApp</p>
-            `;
-          }
-          document.getElementById('showQrModalBtn').style.display = 'none';
         } else {
           statusEl.textContent = '🔴 Desconectado';
-          document.getElementById('qrContainer').innerHTML = '<p>Haz clic en "Reiniciar Conexión" para comenzar.</p>';
+          document.getElementById('qrContainer').innerHTML = '<p>Haz clic en "Conectar WhatsApp" para comenzar.</p>';
           document.getElementById('codeContainer').innerHTML = '';
           document.getElementById('showQrModalBtn').style.display = 'none';
         }
@@ -404,60 +376,22 @@
       }
     }
 
-    async function showQrCode() {
-      await restartBot();
-    }
-
-    async function requestPairingCode() {
-      try {
-        const btn = document.getElementById('requestPairingBtn');
-        btn.disabled = true;
-        btn.textContent = '⏳ Solicitando...';
-        
-        const res = await apiCall('/request-pairing-code', 'POST');
-        const data = await res.json();
-        manualPairingCode = data.code;
-        
-        btn.textContent = '✅ Código solicitado';
-        setTimeout(() => {
-          btn.textContent = '🔢 Vincular con Código';
-          btn.disabled = false;
-        }, 3000);
-        
-        document.getElementById('codeContainer').innerHTML = `
-          <p>🔢 Código: <strong style="font-size:1.6em;">${data.code.match(/.{1,4}/g).join('-')}</strong></p>
-          <p style="color:green;">✔️ Ingresa este código en WhatsApp</p>
-        `;
-        document.getElementById('qrContainer').innerHTML = '';
-        document.getElementById('statusText').textContent = '🟡 Esperando vinculación...';
-        document.getElementById('showQrModalBtn').style.display = 'none';
-      } catch (e) {
-        showError('Error: ' + e.message);
-        document.getElementById('requestPairingBtn').disabled = false;
-        document.getElementById('requestPairingBtn').textContent = '🔢 Vincular con Código';
-      }
-    }
-
     async function restartBot() {
       try {
-        const btn = document.getElementById('restartBot');
+        const btn = document.getElementById('restartBtn');
         btn.disabled = true;
-        btn.textContent = '⏳ Reiniciando...';
-        
+        btn.textContent = '⏳ Conectando...';
         await apiCall('/restart', 'POST');
-        
-        btn.textContent = '✅ Reiniciado';
+        btn.textContent = '✅ QR generado';
         setTimeout(() => {
-          btn.textContent = '⚠️ Reiniciar Conexión';
+          btn.textContent = '📷 Conectar WhatsApp (QR)';
           btn.disabled = false;
-        }, 2000);
-        
-        manualPairingCode = null;
+        }, 3000);
         setTimeout(loadStatus, 3000);
       } catch (e) {
         showError(e.message);
-        document.getElementById('restartBot').disabled = false;
-        document.getElementById('restartBot').textContent = '⚠️ Reiniciar Conexión';
+        document.getElementById('restartBtn').disabled = false;
+        document.getElementById('restartBtn').textContent = '📷 Conectar WhatsApp (QR)';
       }
     }
 
@@ -465,7 +399,6 @@
       if (!confirm('¿Eliminar sesión por completo?')) return;
       try {
         await apiCall('/clear-session', 'POST');
-        manualPairingCode = null;
         alert('Sesión eliminada. Recargando...');
         location.reload();
       } catch (e) {
@@ -752,8 +685,7 @@
       }
     }
 
-    // Iniciar
     main();
   </script>
 </body>
-  </html>
+</html>
