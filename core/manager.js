@@ -1,6 +1,11 @@
 const makeWASocket = require('@whiskeysockets/baileys').default;
-const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
+const {
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
+  useMultiFileAuthState,
+  Browsers,
+} = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const QRCode = require('qrcode');
 const path = require('path');
@@ -18,12 +23,25 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
   console.log(`[User ${userId}] Iniciando instancia para ${cleanPhone} (pairingCode=${usePairingCode})`);
 
+  // Detener instancia existente
   const existing = instances.get(userId);
-  if (existing?.reconnectTimer) {
-    clearTimeout(existing.reconnectTimer);
+  if (existing?.reconnectTimer) clearTimeout(existing.reconnectTimer);
+  if (existing?.sock) {
+    try { existing.sock.end(); } catch (_) {}
   }
 
   const sessionDir = path.join(AUTH_DIR, userId);
+
+  // CLAVE: para pairing code siempre empezar con sesión limpia.
+  // Con archivos de sesión previos (de un QR anterior) WhatsApp
+  // devuelve 401 inmediatamente y cancela el intento.
+  if (usePairingCode) {
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      console.log(`[User ${userId}] Sesión anterior eliminada para inicio limpio.`);
+    }
+  }
+
   if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
   const { state: authState, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -62,32 +80,6 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
   const userBot = createUserBot(userId, sock);
 
-  // Para pairing code: solicitarlo ANTES de que WhatsApp emita el QR.
-  // Se hace con un pequeño delay para dejar que el WebSocket se establezca.
-  if (usePairingCode && !authState.creds.registered) {
-    setTimeout(async () => {
-      const inst = instances.get(userId);
-      if (!inst || inst.pairingCodeRequested || inst.isConnected) return;
-      inst.pairingCodeRequested = true;
-      inst.status = 'requesting_code';
-      console.log(`[User ${userId}] Solicitando código de emparejamiento para ${cleanPhone}...`);
-      try {
-        const code = await sock.requestPairingCode(cleanPhone);
-        const instNow = instances.get(userId);
-        if (instNow) {
-          instNow.pairingCode = code;
-          instNow.qrBase64 = null;
-          instNow.status = 'pairing';
-        }
-        console.log(`[User ${userId}] Código obtenido: ${code}`);
-      } catch (e) {
-        console.error(`[User ${userId}] Error al solicitar código de emparejamiento:`, e.message);
-        const instNow = instances.get(userId);
-        if (instNow) instNow.status = 'disconnected';
-      }
-    }, 3000);
-  }
-
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr, pairingCode } = update;
     const inst = instances.get(userId);
@@ -95,19 +87,45 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
     console.log(`[User ${userId}] connection.update: connection=${connection}, qr=${!!qr}, pairingCode=${!!pairingCode}`);
 
-    // Solo mostrar QR si NO estamos en modo pairing code
-    if (qr && !usePairingCode) {
-      console.log(`[User ${userId}] QR recibido, generando imagen base64...`);
-      inst.qrBase64 = await QRCode.toDataURL(qr);
-      inst.pairingCode = null;
-      inst.status = 'qr_pending';
+    // Cuando el servidor emite el QR, eso significa que el WebSocket está
+    // listo y el servidor tiene el qrRef necesario para el pairing code.
+    // Llamamos requestPairingCode aquí, con sesión limpia → funciona.
+    if (qr) {
+      if (usePairingCode && !inst.pairingCodeRequested) {
+        inst.pairingCodeRequested = true;
+        inst.status = 'requesting_code';
+        console.log(`[User ${userId}] Servidor listo — solicitando código para ${cleanPhone}...`);
+        try {
+          const code = await sock.requestPairingCode(cleanPhone);
+          const instNow = instances.get(userId);
+          if (instNow) {
+            instNow.pairingCode = code;
+            instNow.qrBase64 = null;
+            instNow.status = 'pairing';
+          }
+          console.log(`[User ${userId}] Código obtenido: ${code} — notificación enviada al teléfono.`);
+        } catch (e) {
+          console.error(`[User ${userId}] Error al solicitar código:`, e.message);
+          const instNow = instances.get(userId);
+          if (instNow) {
+            instNow.status = 'disconnected';
+            instNow.pairingCodeRequested = false;
+          }
+        }
+      } else if (!usePairingCode) {
+        // Modo QR normal
+        inst.qrBase64 = await QRCode.toDataURL(qr);
+        inst.pairingCode = null;
+        inst.status = 'qr_pending';
+        console.log(`[User ${userId}] QR generado.`);
+      }
     }
 
     if (pairingCode && !inst.pairingCode) {
       inst.pairingCode = pairingCode;
       inst.qrBase64 = null;
       inst.status = 'pairing';
-      console.log(`[User ${userId}] Código recibido del servidor: ${pairingCode}`);
+      console.log(`[User ${userId}] Código del servidor: ${pairingCode}`);
     }
 
     if (connection === 'open') {
@@ -116,14 +134,14 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       inst.pairingCode = null;
       inst.status = 'connected';
       inst.reconnectAttempts = 0;
-      console.log(`[User ${userId}] CONECTADO a WhatsApp`);
+      console.log(`[User ${userId}] ✅ CONECTADO a WhatsApp`);
 
       const settings = await getSettings(userId);
       if (!settings) {
         const defaultSettings = {
           autoReply: { active: false, text: 'Estoy fuera de servicio', startHour: 22, endHour: 8 },
           tasks: [],
-          statusTasks: []
+          statusTasks: [],
         };
         await supabaseAdmin.from('bot_settings').insert({ user_id: userId, data: defaultSettings });
       }
@@ -132,23 +150,26 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-      const shouldReconnect = !isLoggedOut;
 
-      console.log(`[User ${userId}] Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
+      console.log(`[User ${userId}] Conexión cerrada. statusCode=${statusCode}`);
       inst.isConnected = false;
-      inst.status = 'disconnected';
       inst.qrBase64 = null;
       inst.pairingCode = null;
 
       if (isLoggedOut) {
-        // Si fue un intento de pairing code fallido (401), solo limpiar y parar.
-        // El usuario debe intentar reconectarse manualmente desde el panel.
+        // 401 puede venir si:
+        // - El usuario cerró sesión desde el teléfono
+        // - El intento de pairing fue rechazado
+        // Limpiamos y paramos; el usuario reconecta manualmente.
+        inst.status = 'disconnected';
         console.log(`[User ${userId}] Sesión cerrada (loggedOut). Limpiando archivos.`);
         if (fs.existsSync(sessionDir)) {
           fs.rmSync(sessionDir, { recursive: true, force: true });
         }
         instances.delete(userId);
-      } else if (shouldReconnect) {
+      } else {
+        // Error de red u otro: reconectar automáticamente
+        inst.status = 'disconnected';
         const attempt = inst.reconnectAttempts || 0;
         const delayMs = Math.min(10000 + attempt * 5000, 60000);
         inst.reconnectAttempts = attempt + 1;
@@ -160,9 +181,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     }
   });
 
-  sock.ev.on('creds.update', () => {
-    saveCreds();
-  });
+  sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     await userBot.handleMessages(messages);
@@ -179,7 +198,7 @@ async function stopUserInstance(userId) {
   const instance = instances.get(userId);
   if (instance) {
     if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-    try { instance.sock?.end(); } catch (e) {}
+    try { instance.sock?.end(); } catch (_) {}
     instances.delete(userId);
   }
 }
@@ -217,7 +236,7 @@ async function startUserIfApproved(userId) {
     .eq('id', userId)
     .single();
 
-  if (profile && profile.is_approved) {
+  if (profile?.is_approved) {
     await stopUserInstance(userId);
     return startUserInstance(userId, profile.phone_number, false);
   }
@@ -226,12 +245,12 @@ async function startUserIfApproved(userId) {
 
 async function getGroupsForUser(userId) {
   const instance = instances.get(userId);
-  if (!instance || !instance.isConnected) return [];
+  if (!instance?.isConnected) return [];
   try {
     const groups = await instance.sock.groupFetchAllParticipating();
     return Object.entries(groups).map(([id, info]) => ({ id, name: info.subject }));
   } catch (e) {
-    console.error(`Error fetching groups for user ${userId}:`, e);
+    console.error(`Error obteniendo grupos de ${userId}:`, e.message);
     return [];
   }
 }
@@ -240,7 +259,7 @@ async function clearUserSession(userId) {
   const instance = instances.get(userId);
   if (instance) {
     if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-    try { await instance.sock?.logout(); } catch (e) {}
+    try { await instance.sock?.logout(); } catch (_) {}
     await stopUserInstance(userId);
   }
   const sessionDir = path.join(AUTH_DIR, userId);
