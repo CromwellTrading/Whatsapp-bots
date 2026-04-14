@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
-const { supabase, supabaseAdmin } = require('../auth/supabase');
-const { getUserStatus, startUserInstance, getGroupsForUser, clearUserSession } = require('../core/manager');
+const { supabaseAdmin } = require('../auth/supabase');
+const { getUserStatus, startUserInstance, getGroupsForUser, clearUserSession, instances } = require('../core/manager');
 const { getSettings, saveSettings } = require('../utils/db');
 
 // -------------------- MIDDLEWARES --------------------
@@ -28,7 +28,6 @@ async function approvalMiddleware(req, res, next) {
   if (error || !profile) {
     return res.status(401).json({ error: 'Perfil no encontrado' });
   }
-
   if (!profile.is_approved) {
     return res.status(403).json({ error: 'Cuenta pendiente de aprobación' });
   }
@@ -37,14 +36,13 @@ async function approvalMiddleware(req, res, next) {
   next();
 }
 
-// -------------------- GLOBAL AUTH --------------------
 router.use(authMiddleware);
 
 // -------------------- RUTAS PÚBLICAS (sin aprobación) --------------------
 router.get('/profile', async (req, res) => {
   const { data: profile, error } = await supabaseAdmin
     .from('profiles')
-    .select('is_approved, phone_number, is_admin')
+    .select('is_approved, phone_number, is_admin, full_name')
     .eq('id', req.user.id)
     .single();
 
@@ -58,32 +56,26 @@ router.use(approvalMiddleware);
 router.get('/status', async (req, res) => {
   const status = getUserStatus(req.user.id);
   if (!status) {
-    return res.json({ connected: false, qrAvailable: false });
+    return res.json({ connected: false, qrAvailable: false, status: 'idle' });
   }
   res.json({
     connected: status.connected,
     qrAvailable: !!status.qr,
     pairingCode: status.pairingCode,
-    phoneNumber: status.phoneNumber
+    phoneNumber: status.phoneNumber,
+    status: status.status,
   });
 });
 
 router.get('/qr', async (req, res) => {
   const status = getUserStatus(req.user.id);
   if (!status || !status.qr) return res.status(404).send('QR no disponible');
-  // El QR ya está en base64 listo para usar en src
-  res.send(`<img src="${status.qr}" alt="QR Code" />`);
-});
-
-router.get('/pairing-code', (req, res) => {
-  const status = getUserStatus(req.user.id);
-  if (!status || !status.pairingCode) return res.status(404).json({ error: 'Código no disponible' });
-  res.json({ code: status.pairingCode.match(/.{1,4}/g)?.join('-') || status.pairingCode });
+  res.send(`<img src="${status.qr}" alt="QR Code" style="width:220px;height:220px;" />`);
 });
 
 router.get('/settings', async (req, res) => {
   const settings = await getSettings(req.user.id);
-  res.json(settings || { autoReply: { active: false }, tasks: [], statusTasks: [] });
+  res.json(settings || { autoReply: { active: false, text: '', startHour: 22, endHour: 8 }, tasks: [], statusTasks: [] });
 });
 
 router.post('/settings', async (req, res) => {
@@ -118,45 +110,17 @@ router.post('/upload', upload.single('image'), async (req, res) => {
   res.json({ url: publicUrl });
 });
 
+// Conectar: acepta method = 'qr' | 'pairing'
 router.post('/restart', async (req, res) => {
   const phone = String(req.profile.phone_number).replace(/\D/g, '');
-  await startUserInstance(req.user.id, phone);
+  const usePairingCode = req.body?.method === 'pairing';
+  await startUserInstance(req.user.id, phone, usePairingCode);
   res.json({ success: true });
 });
 
 router.post('/clear-session', async (req, res) => {
   await clearUserSession(req.user.id);
   res.json({ success: true, message: 'Sesión eliminada. Reinicia la conexión.' });
-});
-
-// Solicitar código manualmente (solo después de tener QR)
-router.post('/request-pairing-code', async (req, res) => {
-  const userId = req.user.id;
-  console.log(`[API] ${userId} solicitando código manualmente`);
-  const instance = require('../core/manager').instances.get(userId);
-  
-  if (!instance) {
-    console.log(`[API] ${userId} - Instancia no encontrada`);
-    return res.status(400).json({ error: 'Instancia no iniciada. Usa /restart primero.' });
-  }
-
-  if (!instance.qrBase64) {
-    console.log(`[API] ${userId} - Aún no hay QR, espera unos segundos.`);
-    return res.status(400).json({ error: 'Aún no hay QR disponible. Espera unos segundos.' });
-  }
-
-  const phoneNumber = String(req.profile.phone_number).replace(/\D/g, '');
-  console.log(`[API] ${userId} - Teléfono limpio: ${phoneNumber}`);
-  try {
-    console.log(`[API] ${userId} - Llamando a sock.requestPairingCode...`);
-    const code = await instance.sock.requestPairingCode(phoneNumber);
-    instance.pairingCode = code;
-    console.log(`[API] ${userId} - Código obtenido: ${code}`);
-    res.json({ success: true, code });
-  } catch (err) {
-    console.error(`[API] ${userId} - Error:`, err);
-    res.status(500).json({ error: err.message });
-  }
 });
 
 // -------------------- GRUPOS --------------------
@@ -194,14 +158,14 @@ router.post('/tasks/:id/test', async (req, res) => {
   const task = settings.tasks.find(t => t.id === req.params.id);
   if (!task) return res.status(404).json({ error: 'Tarea no encontrada' });
 
-  const instance = require('../core/manager').instances.get(req.user.id);
+  const instance = instances.get(req.user.id);
   if (!instance || !instance.isConnected) {
     return res.status(400).json({ error: 'WhatsApp no conectado' });
   }
 
   try {
     const msg = task.mediaUrl
-      ? { image: { url: task.mediaUrl }, caption: task.message }
+      ? { image: { url: task.mediaUrl }, caption: task.message || '' }
       : { text: task.message };
     await instance.sock.sendMessage(task.target, msg);
     res.json({ success: true });
@@ -239,14 +203,14 @@ router.post('/status-tasks/:id/test', async (req, res) => {
   const task = settings.statusTasks.find(t => t.id === req.params.id);
   if (!task) return res.status(404).json({ error: 'Estado no encontrado' });
 
-  const instance = require('../core/manager').instances.get(req.user.id);
+  const instance = instances.get(req.user.id);
   if (!instance || !instance.isConnected) {
     return res.status(400).json({ error: 'WhatsApp no conectado' });
   }
 
   try {
     const msg = task.mediaUrl
-      ? { image: { url: task.mediaUrl }, caption: task.message }
+      ? { image: { url: task.mediaUrl }, caption: task.message || '' }
       : { text: task.message };
     await instance.sock.sendMessage('status@broadcast', msg);
     res.json({ success: true });
