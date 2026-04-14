@@ -62,6 +62,32 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
   const userBot = createUserBot(userId, sock);
 
+  // Para pairing code: solicitarlo ANTES de que WhatsApp emita el QR.
+  // Se hace con un pequeño delay para dejar que el WebSocket se establezca.
+  if (usePairingCode && !authState.creds.registered) {
+    setTimeout(async () => {
+      const inst = instances.get(userId);
+      if (!inst || inst.pairingCodeRequested || inst.isConnected) return;
+      inst.pairingCodeRequested = true;
+      inst.status = 'requesting_code';
+      console.log(`[User ${userId}] Solicitando código de emparejamiento para ${cleanPhone}...`);
+      try {
+        const code = await sock.requestPairingCode(cleanPhone);
+        const instNow = instances.get(userId);
+        if (instNow) {
+          instNow.pairingCode = code;
+          instNow.qrBase64 = null;
+          instNow.status = 'pairing';
+        }
+        console.log(`[User ${userId}] Código obtenido: ${code}`);
+      } catch (e) {
+        console.error(`[User ${userId}] Error al solicitar código de emparejamiento:`, e.message);
+        const instNow = instances.get(userId);
+        if (instNow) instNow.status = 'disconnected';
+      }
+    }, 3000);
+  }
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr, pairingCode } = update;
     const inst = instances.get(userId);
@@ -69,36 +95,19 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
     console.log(`[User ${userId}] connection.update: connection=${connection}, qr=${!!qr}, pairingCode=${!!pairingCode}`);
 
-    if (qr) {
-      if (usePairingCode && !inst.pairingCodeRequested) {
-        inst.pairingCodeRequested = true;
-        inst.status = 'requesting_code';
-        console.log(`[User ${userId}] QR listo, solicitando código de emparejamiento para ${cleanPhone}...`);
-        try {
-          const code = await sock.requestPairingCode(cleanPhone);
-          inst.pairingCode = code;
-          inst.qrBase64 = null;
-          inst.status = 'pairing';
-          console.log(`[User ${userId}] Código obtenido: ${code}`);
-        } catch (e) {
-          console.error(`[User ${userId}] Error al solicitar código:`, e.message);
-          inst.qrBase64 = await QRCode.toDataURL(qr);
-          inst.status = 'qr_pending';
-          inst.pairingCodeRequested = false;
-        }
-      } else if (!usePairingCode) {
-        console.log(`[User ${userId}] QR recibido, generando imagen base64...`);
-        inst.qrBase64 = await QRCode.toDataURL(qr);
-        inst.pairingCode = null;
-        inst.status = 'qr_pending';
-      }
+    // Solo mostrar QR si NO estamos en modo pairing code
+    if (qr && !usePairingCode) {
+      console.log(`[User ${userId}] QR recibido, generando imagen base64...`);
+      inst.qrBase64 = await QRCode.toDataURL(qr);
+      inst.pairingCode = null;
+      inst.status = 'qr_pending';
     }
 
     if (pairingCode && !inst.pairingCode) {
       inst.pairingCode = pairingCode;
       inst.qrBase64 = null;
       inst.status = 'pairing';
-      console.log(`[User ${userId}] Código de emparejamiento recibido del servidor: ${pairingCode}`);
+      console.log(`[User ${userId}] Código recibido del servidor: ${pairingCode}`);
     }
 
     if (connection === 'open') {
@@ -122,13 +131,24 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+      const shouldReconnect = !isLoggedOut;
 
       console.log(`[User ${userId}] Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
       inst.isConnected = false;
       inst.status = 'disconnected';
+      inst.qrBase64 = null;
+      inst.pairingCode = null;
 
-      if (shouldReconnect) {
+      if (isLoggedOut) {
+        // Si fue un intento de pairing code fallido (401), solo limpiar y parar.
+        // El usuario debe intentar reconectarse manualmente desde el panel.
+        console.log(`[User ${userId}] Sesión cerrada (loggedOut). Limpiando archivos.`);
+        if (fs.existsSync(sessionDir)) {
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+        instances.delete(userId);
+      } else if (shouldReconnect) {
         const attempt = inst.reconnectAttempts || 0;
         const delayMs = Math.min(10000 + attempt * 5000, 60000);
         inst.reconnectAttempts = attempt + 1;
@@ -136,10 +156,6 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
         inst.reconnectTimer = setTimeout(() => {
           startUserInstance(userId, cleanPhone, false);
         }, delayMs);
-      } else if (statusCode === DisconnectReason.loggedOut) {
-        console.log(`[User ${userId}] Sesión cerrada (loggedOut). Eliminando archivos.`);
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-        startUserInstance(userId, cleanPhone, false);
       }
     }
   });
