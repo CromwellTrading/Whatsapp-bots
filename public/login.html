@@ -1,173 +1,255 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-  <title>Login - WhatsApp Bot SaaS</title>
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WhatsApp Bot SaaS — Acceso</title>
   <style>
-    body { font-family: Arial; max-width: 400px; margin: 50px auto; padding: 20px; }
-    input { width: 100%; padding: 12px; margin: 8px 0; box-sizing: border-box; }
-    button { padding: 12px 20px; width: 100%; margin: 5px 0; cursor: pointer; }
-    .tab { display: flex; margin-bottom: 20px; }
-    .tab button { flex:1; background: #f0f0f0; border: none; }
-    .tab button.active { background: #007bff; color: white; }
-    .form-container { border: 1px solid #ddd; padding: 20px; border-radius: 8px; }
-    .error { color: red; margin-top: 10px; }
-    .info { color: blue; margin-top: 10px; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .container {
+      background: #fff;
+      width: 100%;
+      max-width: 420px;
+      border-radius: 16px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+    .header {
+      background: linear-gradient(135deg, #075e54, #128c7e);
+      padding: 32px 24px;
+      text-align: center;
+      color: white;
+    }
+    .header .logo {
+      font-size: 48px;
+      margin-bottom: 8px;
+    }
+    .header h1 {
+      font-size: 1.4em;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .header p {
+      opacity: 0.85;
+      font-size: 0.9em;
+    }
+    .body {
+      padding: 28px 24px;
+    }
+    .tab-bar {
+      display: flex;
+      background: #f0f2f5;
+      border-radius: 8px;
+      padding: 4px;
+      margin-bottom: 24px;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      background: transparent;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.95em;
+      font-weight: 500;
+      color: #666;
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      background: #fff;
+      color: #075e54;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 0.85em;
+      font-weight: 600;
+      color: #555;
+      margin-bottom: 6px;
+    }
+    .form-group input {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1.5px solid #ddd;
+      border-radius: 8px;
+      font-size: 0.95em;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus { border-color: #128c7e; }
+    .btn-primary {
+      width: 100%;
+      padding: 13px;
+      background: linear-gradient(135deg, #075e54, #128c7e);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 1em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      margin-top: 4px;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .msg {
+      margin-top: 14px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.9em;
+      text-align: center;
+      display: none;
+    }
+    .msg.error { background: #fdecea; color: #c0392b; display: block; }
+    .msg.info { background: #e8f5e9; color: #2e7d32; display: block; }
   </style>
 </head>
 <body>
-  <h1 style="text-align:center;">🤖 WhatsApp Bot SaaS</h1>
-  <div class="tab">
-    <button id="loginTab" class="active">Iniciar Sesión</button>
-    <button id="registerTab">Registrarse</button>
-  </div>
-  
-  <div class="form-container">
-    <form id="loginForm">
-      <h2>Login</h2>
-      <input type="email" id="loginEmail" placeholder="Email" required>
-      <input type="password" id="loginPassword" placeholder="Contraseña" required>
-      <button type="submit">Entrar</button>
-    </form>
-    
-    <form id="registerForm" style="display:none;">
-      <h2>Registro</h2>
-      <input type="text" id="regFullName" placeholder="Nombre completo" required>
-      <input type="tel" id="regPhone" placeholder="Número (ej: 5359190241)" required>
-      <input type="email" id="regEmail" placeholder="Email" required>
-      <input type="password" id="regPassword" placeholder="Contraseña (mín 6)" required>
-      <button type="submit">Registrarse</button>
-    </form>
-    <div id="errorMsg" class="error"></div>
-    <div id="infoMsg" class="info"></div>
+  <div class="container">
+    <div class="header">
+      <div class="logo">💬</div>
+      <h1>WhatsApp Bot SaaS</h1>
+      <p>Gestiona tu bot de WhatsApp con facilidad</p>
+    </div>
+    <div class="body">
+      <div class="tab-bar">
+        <button class="tab-btn active" id="loginTab">Iniciar Sesión</button>
+        <button class="tab-btn" id="registerTab">Registrarse</button>
+      </div>
+
+      <form id="loginForm">
+        <div class="form-group">
+          <label>Correo electrónico</label>
+          <input type="email" id="loginEmail" placeholder="correo@ejemplo.com" required>
+        </div>
+        <div class="form-group">
+          <label>Contraseña</label>
+          <input type="password" id="loginPassword" placeholder="Tu contraseña" required>
+        </div>
+        <button type="submit" class="btn-primary" id="loginBtn">Entrar</button>
+      </form>
+
+      <form id="registerForm" style="display:none;">
+        <div class="form-group">
+          <label>Nombre completo</label>
+          <input type="text" id="regFullName" placeholder="Juan García" required>
+        </div>
+        <div class="form-group">
+          <label>Número de WhatsApp (sin +)</label>
+          <input type="tel" id="regPhone" placeholder="5359190241" required>
+        </div>
+        <div class="form-group">
+          <label>Correo electrónico</label>
+          <input type="email" id="regEmail" placeholder="correo@ejemplo.com" required>
+        </div>
+        <div class="form-group">
+          <label>Contraseña (mínimo 6 caracteres)</label>
+          <input type="password" id="regPassword" placeholder="Contraseña segura" required>
+        </div>
+        <button type="submit" class="btn-primary" id="registerBtn">Crear cuenta</button>
+      </form>
+
+      <div id="msgBox" class="msg"></div>
+    </div>
   </div>
 
   <script src="/config.js"></script>
   <script type="module">
     import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-    
-    // Limpieza forzada si la URL contiene #clear
+
     if (window.location.hash === '#clear') {
       localStorage.clear();
-      sessionStorage.clear();
       window.location.href = '/login.html';
     }
-    
+
     const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-    
-    function showError(msg) {
-      document.getElementById('errorMsg').textContent = msg;
+
+    function showMsg(text, type) {
+      const el = document.getElementById('msgBox');
+      el.textContent = text;
+      el.className = 'msg ' + type;
     }
-    function showInfo(msg) {
-      document.getElementById('infoMsg').textContent = msg;
-    }
-    
-    // Verificar token existente (sin redirigir si hay error, solo limpiar)
-    async function checkExistingSession() {
+
+    async function checkSession() {
       const token = localStorage.getItem('sb-token');
       if (!token) return;
-      
-      showInfo('Verificando sesión...');
-      
+      showMsg('Verificando sesión...', 'info');
       try {
         const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (error || !user) {
-          showInfo('Sesión expirada. Inicia sesión nuevamente.');
-          localStorage.removeItem('sb-token');
-          return;
-        }
-        
-        const profileRes = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (profileRes.ok) {
-          const profile = await profileRes.json();
-          window.location.href = profile.is_admin ? '/admin.html' : '/user.html';
+        if (error || !user) { localStorage.removeItem('sb-token'); document.getElementById('msgBox').className = 'msg'; return; }
+        const res = await fetch('/api/user/profile', { headers: { 'Authorization': `Bearer ${token}` } });
+        if (res.ok) {
+          const p = await res.json();
+          window.location.href = p.is_admin ? '/admin.html' : '/user.html';
         } else {
-          showInfo('No se pudo cargar el perfil. Inicia sesión manualmente.');
           localStorage.removeItem('sb-token');
+          document.getElementById('msgBox').className = 'msg';
         }
       } catch (e) {
-        showInfo('Error de conexión. Inicia sesión manualmente.');
         localStorage.removeItem('sb-token');
+        document.getElementById('msgBox').className = 'msg';
       }
     }
-    
-    checkExistingSession();
-    
+    checkSession();
+
     document.getElementById('loginTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'block';
       document.getElementById('registerForm').style.display = 'none';
       document.getElementById('loginTab').classList.add('active');
       document.getElementById('registerTab').classList.remove('active');
-      document.getElementById('errorMsg').textContent = '';
-      document.getElementById('infoMsg').textContent = '';
+      document.getElementById('msgBox').className = 'msg';
     };
     document.getElementById('registerTab').onclick = () => {
       document.getElementById('loginForm').style.display = 'none';
       document.getElementById('registerForm').style.display = 'block';
       document.getElementById('registerTab').classList.add('active');
       document.getElementById('loginTab').classList.remove('active');
-      document.getElementById('errorMsg').textContent = '';
-      document.getElementById('infoMsg').textContent = '';
+      document.getElementById('msgBox').className = 'msg';
     };
-    
+
     document.getElementById('loginForm').onsubmit = async (e) => {
       e.preventDefault();
-      showError('');
-      showInfo('Iniciando sesión...');
+      const btn = document.getElementById('loginBtn');
+      btn.disabled = true; btn.textContent = 'Entrando...';
+      showMsg('', '');
       const email = document.getElementById('loginEmail').value;
       const password = document.getElementById('loginPassword').value;
-      
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
-        showError(error.message);
-        showInfo('');
-        return;
-      }
-      
+      if (error) { showMsg(error.message, 'error'); btn.disabled = false; btn.textContent = 'Entrar'; return; }
       localStorage.setItem('sb-token', data.session.access_token);
-      
       try {
-        const profileRes = await fetch('/api/user/profile', {
-          headers: { 'Authorization': `Bearer ${data.session.access_token}` }
-        });
-        const profile = await profileRes.json();
-        window.location.href = profile.is_admin ? '/admin.html' : '/user.html';
-      } catch {
-        window.location.href = '/user.html';
-      }
+        const res = await fetch('/api/user/profile', { headers: { 'Authorization': `Bearer ${data.session.access_token}` } });
+        const p = await res.json();
+        window.location.href = p.is_admin ? '/admin.html' : '/user.html';
+      } catch { window.location.href = '/user.html'; }
     };
-    
+
     document.getElementById('registerForm').onsubmit = async (e) => {
       e.preventDefault();
-      showError('');
-      showInfo('Registrando...');
+      const btn = document.getElementById('registerBtn');
+      btn.disabled = true; btn.textContent = 'Registrando...';
+      showMsg('', '');
       const fullName = document.getElementById('regFullName').value;
       const phone = document.getElementById('regPhone').value.replace(/\D/g, '');
       const email = document.getElementById('regEmail').value;
       const password = document.getElementById('regPassword').value;
-      
-      if (phone.length < 7) {
-        showError('Número inválido');
-        showInfo('');
-        return;
-      }
-      
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: { data: { full_name: fullName, phone_number: phone } }
-      });
-      if (error) {
-        showError(error.message);
-        showInfo('');
-        return;
-      }
-      
-      alert('✅ Registro exitoso. Tu cuenta está pendiente de aprobación.');
+      if (phone.length < 7) { showMsg('Número inválido', 'error'); btn.disabled = false; btn.textContent = 'Crear cuenta'; return; }
+      const { error } = await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName, phone_number: phone } } });
+      if (error) { showMsg(error.message, 'error'); btn.disabled = false; btn.textContent = 'Crear cuenta'; return; }
+      showMsg('✅ Registro exitoso. Tu cuenta está pendiente de aprobación por el administrador.', 'info');
+      btn.disabled = false; btn.textContent = 'Crear cuenta';
       document.getElementById('loginTab').click();
-      showInfo('');
     };
   </script>
 </body>
