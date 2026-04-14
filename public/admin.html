@@ -1,184 +1,320 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-  <title>Admin - WhatsApp Bot SaaS</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Administración — WhatsApp Bot SaaS</title>
   <style>
-    body { font-family: Arial; max-width: 1200px; margin: 20px auto; padding: 0 20px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    th { background-color: #f2f2f2; }
-    .connected { color: green; }
-    .disconnected { color: red; }
-    button { margin: 2px; padding: 5px 10px; cursor: pointer; }
-    #logout { float: right; padding: 8px 16px; }
-    .error { color: red; background: #f8d7da; padding: 10px; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; min-height: 100vh; }
+
+    .topbar {
+      background: linear-gradient(135deg, #075e54, #128c7e);
+      color: white;
+      padding: 0 24px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+    .topbar h1 { font-size: 1.1em; font-weight: 600; }
+    .topbar-actions { display: flex; gap: 10px; align-items: center; }
+    .btn-top {
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.3);
+      color: white;
+      padding: 7px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 0.85em;
+      transition: background 0.2s;
+      text-decoration: none;
+    }
+    .btn-top:hover { background: rgba(255,255,255,0.25); }
+
+    .content { max-width: 1100px; margin: 0 auto; padding: 24px; }
+
+    .stats-row { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+    .stat-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px 24px;
+      flex: 1;
+      min-width: 150px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      text-align: center;
+    }
+    .stat-card .stat-value { font-size: 2em; font-weight: 700; color: #075e54; }
+    .stat-card .stat-label { font-size: 0.82em; color: #888; margin-top: 4px; }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .card-header h2 { font-size: 1.05em; color: #333; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+    thead th {
+      background: #f5f5f5;
+      padding: 10px 14px;
+      text-align: left;
+      color: #666;
+      font-weight: 600;
+      font-size: 0.8em;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    tbody td { padding: 13px 14px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: #fafafa; }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.8em;
+      font-weight: 600;
+    }
+    .badge-green { background: #e8f5e9; color: #2e7d32; }
+    .badge-yellow { background: #fff8e1; color: #f57f17; }
+    .badge-red { background: #ffebee; color: #c62828; }
+    .badge-blue { background: #e3f2fd; color: #1565c0; }
+    .badge-gray { background: #f5f5f5; color: #666; }
+
+    .btn { padding: 7px 14px; border-radius: 7px; border: none; cursor: pointer; font-size: 0.82em; font-weight: 500; transition: all 0.2s; display: inline-flex; align-items: center; gap: 5px; }
+    .btn-green { background: #25d366; color: white; }
+    .btn-green:hover { background: #1da851; }
+    .btn-blue { background: #128c7e; color: white; }
+    .btn-blue:hover { background: #075e54; }
+    .btn-red { background: #e53935; color: white; }
+    .btn-red:hover { background: #c62828; }
+    .btn-gray { background: #f0f2f5; color: #555; border: 1px solid #ddd; }
+    .btn-gray:hover { background: #e0e0e0; }
+
+    .user-meta { font-size: 0.78em; color: #999; margin-top: 2px; }
+    .avatar {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, #075e54, #128c7e);
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 600;
+      font-size: 0.9em;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+    .user-cell { display: flex; align-items: center; }
+
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 20px;
+      border-radius: 10px;
+      color: white;
+      font-size: 0.9em;
+      font-weight: 500;
+      z-index: 9999;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+    #toast.success { background: #2e7d32; }
+    #toast.error { background: #c62828; }
+    #toast.info { background: #1565c0; }
+
+    .refresh-btn { background: #f0f2f5; border: 1px solid #ddd; padding: 7px 14px; border-radius: 7px; cursor: pointer; font-size: 0.85em; color: #555; transition: background 0.2s; }
+    .refresh-btn:hover { background: #e0e0e0; }
   </style>
 </head>
 <body>
-  <button id="logout">Cerrar Sesión</button>
-  <h1>🔧 Panel de Administración</h1>
-  <p><a href="/user.html">📱 Ir a mi panel de usuario</a></p>
-  
-  <div id="errorMessage" class="error" style="display:none;"></div>
-  
-  <h2>👥 Usuarios Registrados</h2>
-  <table id="usersTable">
-    <thead>
-      <tr>
-        <th>Teléfono</th>
-        <th>Nombre</th>
-        <th>Admin</th>
-        <th>Aprobado</th>
-        <th>Estado WhatsApp</th>
-        <th>Acciones</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
 
-  <script src="/config.js"></script>
-  <script type="module">
-    import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-    
-    function showError(msg) {
-      const el = document.getElementById('errorMessage');
-      el.textContent = '❌ ' + msg;
-      el.style.display = 'block';
-    }
-    
+<div class="topbar">
+  <h1>🔧 Panel de Administración</h1>
+  <div class="topbar-actions">
+    <a href="/user.html" class="btn-top">📱 Mi Panel</a>
+    <button class="btn-top" id="logoutBtn">Salir</button>
+  </div>
+</div>
+
+<div class="content">
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-value" id="statTotal">—</div>
+      <div class="stat-label">Usuarios totales</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statApproved">—</div>
+      <div class="stat-label">Aprobados</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statPending">—</div>
+      <div class="stat-label">Pendientes</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statConnected">—</div>
+      <div class="stat-label">Conectados</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h2>👥 Usuarios Registrados</h2>
+      <button class="refresh-btn" id="refreshBtn">🔄 Actualizar</button>
+    </div>
+    <div id="tableWrapper">
+      <p style="color:#888; text-align:center; padding:30px;">Cargando usuarios...</p>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/config.js"></script>
+<script type="module">
+  import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+  const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  const token = localStorage.getItem('sb-token');
+
+  function toast(msg, type = 'success') {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = type;
+    el.style.display = 'block';
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.style.display = 'none', 3500);
+  }
+
+  if (!token) { window.location.href = '/login.html'; }
+
+  async function api(path, method = 'GET', body = null) {
+    const opts = { method, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(`/api/admin${path}`, opts);
+    if (res.status === 401) { localStorage.removeItem('sb-token'); window.location.href = '/login.html'; throw new Error('No autorizado'); }
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'Error'); }
+    return res;
+  }
+
+  // Verify admin access
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) { localStorage.removeItem('sb-token'); window.location.href = '/login.html'; }
+    const { data: profile } = await supabase.from('profiles').select('is_admin').eq('id', user.id).single();
+    if (!profile?.is_admin) { window.location.href = '/user.html'; }
+  } catch (e) {
+    window.location.href = '/login.html';
+  }
+
+  async function loadUsers() {
     try {
-      if (!window.SUPABASE_URL || !window.SUPABASE_ANON_KEY) {
-        throw new Error('Configuración de Supabase no cargada');
+      const res = await api('/users');
+      const users = await res.json();
+
+      document.getElementById('statTotal').textContent = users.length;
+      document.getElementById('statApproved').textContent = users.filter(u => u.is_approved).length;
+      document.getElementById('statPending').textContent = users.filter(u => !u.is_approved).length;
+      document.getElementById('statConnected').textContent = users.filter(u => u.connected).length;
+
+      if (!users.length) {
+        document.getElementById('tableWrapper').innerHTML = '<p style="color:#aaa; text-align:center; padding:40px;">No hay usuarios registrados</p>';
+        return;
       }
-      
-      const supabase = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-      
-      let token = localStorage.getItem('sb-token');
-      if (!token) {
-        window.location.href = '/login.html';
-        throw new Error('Redirigiendo...');
-      }
-      
-      supabase.auth.setSession({ access_token: token, refresh_token: '' });
-      
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) {
-        localStorage.removeItem('sb-token');
-        window.location.href = '/login.html';
-        throw new Error('Sesión inválida');
-      }
-      
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('is_admin')
-        .eq('id', user.id)
-        .single();
-      
-      if (!profile?.is_admin) {
-        window.location.href = '/user.html';
-        throw new Error('Acceso denegado');
-      }
-      
-      async function apiCall(endpoint, method='GET', body=null) {
-        const res = await fetch(`/api/admin${endpoint}`, {
-          method,
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: body ? JSON.stringify(body) : null
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.error || 'Error en la solicitud');
-        }
-        return res;
-      }
-      
-      async function loadUsers() {
-        try {
-          const res = await apiCall('/users');
-          const users = await res.json();
-          const tbody = document.querySelector('#usersTable tbody');
-          tbody.innerHTML = '';
-          users.forEach(u => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-              <td>${u.phone_number}</td>
-              <td>${u.full_name || '-'}</td>
-              <td>${u.is_admin ? '✅ Sí' : '❌ No'}</td>
-              <td>${u.is_approved ? '✅ Aprobado' : '⏳ Pendiente'}</td>
-              <td class="${u.connected ? 'connected' : 'disconnected'}">
-                ${u.connected ? '🟢 Conectado' : (u.hasQR ? '🟡 Esperando QR' : '🔴 Desconectado')}
-              </td>
-              <td>
-                ${!u.is_approved ? `<button class="approveBtn" data-id="${u.id}">✅ Aprobar</button>` : ''}
-                <button class="restartBtn" data-id="${u.id}">🔄 Reiniciar</button>
-                <button class="deleteBtn" data-id="${u.id}">🗑️ Eliminar</button>
-              </td>
-            `;
-            tbody.appendChild(tr);
-          });
-          
-          // Event listeners
-          document.querySelectorAll('.approveBtn').forEach(btn => {
-            btn.onclick = () => approveUser(btn.dataset.id);
-          });
-          document.querySelectorAll('.restartBtn').forEach(btn => {
-            btn.onclick = () => restartUser(btn.dataset.id);
-          });
-          document.querySelectorAll('.deleteBtn').forEach(btn => {
-            btn.onclick = () => deleteUser(btn.dataset.id);
-          });
-        } catch (e) {
-          showError('Error al cargar usuarios: ' + e.message);
-        }
-      }
-      
-      async function approveUser(userId) {
-        if (!confirm('¿Aprobar este usuario?')) return;
-        try {
-          await apiCall(`/users/${userId}/approve`, 'POST');
-          loadUsers();
-        } catch (e) {
-          showError('Error: ' + e.message);
-        }
-      }
-      
-      async function restartUser(userId) {
-        if (!confirm('¿Reiniciar instancia?')) return;
-        try {
-          await apiCall(`/users/${userId}/restart`, 'POST');
-          loadUsers();
-        } catch (e) {
-          showError('Error: ' + e.message);
-        }
-      }
-      
-      async function deleteUser(userId) {
-        if (!confirm('¿Eliminar usuario permanentemente?')) return;
-        try {
-          await apiCall(`/users/${userId}`, 'DELETE');
-          loadUsers();
-        } catch (e) {
-          showError('Error: ' + e.message);
-        }
-      }
-      
-      function logout() {
-        localStorage.removeItem('sb-token');
-        window.location.href = '/login.html';
-      }
-      
-      document.getElementById('logout').onclick = logout;
-      
-      loadUsers();
-      setInterval(loadUsers, 30000);
-      
-    } catch (error) {
-      document.body.innerHTML = `<div class="error">Error crítico: ${error.message}</div>`;
-      console.error(error);
+
+      const rows = users.map(u => {
+        const initials = (u.full_name || u.phone_number || '?').substring(0, 2).toUpperCase();
+        const statusBadge = u.connected
+          ? '<span class="badge badge-green">🟢 Conectado</span>'
+          : (u.status === 'pairing' || u.status === 'qr_pending' || u.status === 'connecting')
+            ? '<span class="badge badge-yellow">🟡 Vinculando</span>'
+            : '<span class="badge badge-gray">⚫ Offline</span>';
+        const approvedBadge = u.is_approved
+          ? '<span class="badge badge-green">✅ Aprobado</span>'
+          : '<span class="badge badge-yellow">⏳ Pendiente</span>';
+        const adminBadge = u.is_admin ? '<span class="badge badge-blue">Admin</span>' : '';
+        const date = u.created_at ? new Date(u.created_at).toLocaleDateString('es-ES') : '—';
+
+        return `
+          <tr>
+            <td>
+              <div class="user-cell">
+                <div class="avatar">${initials}</div>
+                <div>
+                  <div style="font-weight:500;">${u.full_name || '—'}</div>
+                  <div class="user-meta">${u.phone_number || '—'}</div>
+                </div>
+              </div>
+            </td>
+            <td>${approvedBadge} ${adminBadge}</td>
+            <td>${statusBadge}</td>
+            <td style="color:#aaa; font-size:0.82em;">${date}</td>
+            <td style="white-space:nowrap;">
+              ${!u.is_approved ? `<button class="btn btn-green approveBtn" data-id="${u.id}">✅ Aprobar</button>` : ''}
+              ${u.is_approved ? `<button class="btn btn-blue restartBtn" data-id="${u.id}">🔄 Reiniciar</button>` : ''}
+              <button class="btn btn-red deleteBtn" data-id="${u.id}">🗑️ Eliminar</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      document.getElementById('tableWrapper').innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Usuario</th>
+              <th>Estado de cuenta</th>
+              <th>WhatsApp</th>
+              <th>Registro</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+
+      document.querySelectorAll('.approveBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('¿Aprobar este usuario?')) return;
+          try { await api(`/users/${btn.dataset.id}/approve`, 'POST'); toast('✅ Usuario aprobado'); loadUsers(); }
+          catch (e) { toast(e.message, 'error'); }
+        };
+      });
+      document.querySelectorAll('.restartBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('¿Reiniciar la instancia de WhatsApp de este usuario?')) return;
+          try { await api(`/users/${btn.dataset.id}/restart`, 'POST'); toast('🔄 Instancia reiniciada'); loadUsers(); }
+          catch (e) { toast(e.message, 'error'); }
+        };
+      });
+      document.querySelectorAll('.deleteBtn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('⚠️ ¿Eliminar este usuario permanentemente? Esta acción no se puede deshacer.')) return;
+          try { await api(`/users/${btn.dataset.id}`, 'DELETE'); toast('Usuario eliminado'); loadUsers(); }
+          catch (e) { toast(e.message, 'error'); }
+        };
+      });
+
+    } catch (e) {
+      document.getElementById('tableWrapper').innerHTML = `<p style="color:red; padding:20px;">Error: ${e.message}</p>`;
     }
-  </script>
+  }
+
+  document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('sb-token'); window.location.href = '/login.html'; };
+  document.getElementById('refreshBtn').onclick = loadUsers;
+
+  loadUsers();
+  setInterval(loadUsers, 30000);
+</script>
 </body>
 </html>
