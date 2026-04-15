@@ -118,6 +118,13 @@ router.post('/restart', async (req, res) => {
   res.json({ success: true });
 });
 
+// Ruta específica para conexión con código de emparejamiento (usada por el frontend)
+router.post('/connect-with-code', async (req, res) => {
+  const phone = String(req.profile.phone_number).replace(/\D/g, '');
+  await startUserInstance(req.user.id, phone, true); // true = usar pairing code
+  res.json({ success: true, code: 'pending' });
+});
+
 router.post('/clear-session', async (req, res) => {
   await clearUserSession(req.user.id);
   res.json({ success: true, message: 'Sesión eliminada. Reinicia la conexión.' });
