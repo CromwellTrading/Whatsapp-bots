@@ -67,6 +67,7 @@ async function requestPairingCodeForInstance(userId) {
     if (current) {
       current.status = 'disconnected';
       current.pairingCodeRequested = false;
+      current.pairingCode = null;
     }
   }
 }
@@ -75,7 +76,6 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
   const cleanPhone = normalizePhoneNumber(phoneNumber);
   console.log(`[User ${userId}] Iniciando instancia para ${cleanPhone} (pairingCode=${usePairingCode})`);
 
-  // Detener instancia existente
   const existing = instances.get(userId);
   if (existing) {
     clearInstanceTimers(existing);
@@ -86,7 +86,6 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
   const sessionDir = path.join(AUTH_DIR, userId);
 
-  // Para pairing code siempre empezar con sesión limpia.
   if (usePairingCode) {
     if (fs.existsSync(sessionDir)) {
       safeRemoveDir(sessionDir);
@@ -104,7 +103,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     version,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
-    mobile: false, // modo multi-dispositivo
+    mobile: false,
     auth: {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'silent' })),
@@ -131,6 +130,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     pairingCodeRequested: false,
     pairingCodeGeneratedAt: null,
   };
+
   instances.set(userId, instanceState);
 
   const userBot = createUserBot(userId, sock);
@@ -144,7 +144,6 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       `[User ${userId}] connection.update: connection=${connection}, qr=${!!qr}, pairingCode=${!!pairingCode}`
     );
 
-    // En modo pairing code no dependemos del QR para pedir el código.
     if (qr) {
       if (!usePairingCode) {
         try {
@@ -201,12 +200,11 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       inst.qrBase64 = null;
 
       const codeAge = inst.pairingCodeGeneratedAt ? Date.now() - inst.pairingCodeGeneratedAt : Infinity;
-      const isRecentPairing = inst.usePairingCode && inst.pairingCode && codeAge < 120000; // 2 minutos
+      const isRecentPairing = inst.usePairingCode && inst.pairingCode && codeAge < 120000;
 
       clearInstanceTimers(inst);
 
       if (isLoggedOut && isRecentPairing) {
-        // CLAVE: no borrar sesión ni reiniciar mientras el pairing sigue reciente.
         inst.status = 'pairing';
         inst.pairingCodeRequested = false;
         console.log(
@@ -225,7 +223,6 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
         return;
       }
 
-      // Error de red u otro: reconectar automáticamente
       inst.status = 'disconnected';
       const attempt = inst.reconnectAttempts || 0;
       const delayMs = Math.min(10000 + attempt * 5000, 60000);
@@ -244,7 +241,6 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     await userBot.handleMessages(messages);
   });
 
-  // Solicitud de pairing code sin depender del evento qr.
   if (usePairingCode) {
     instanceState.pairingCodeTimer = setTimeout(async () => {
       const currentInst = instances.get(userId);
