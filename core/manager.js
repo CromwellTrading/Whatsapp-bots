@@ -32,7 +32,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
   const sessionDir = path.join(AUTH_DIR, userId);
 
-  // CLAVE: para pairing code siempre empezar con sesión limpia.
+  // Para pairing code siempre empezar con sesión limpia.
   // Con archivos de sesión previos (de un QR anterior) WhatsApp
   // devuelve 401 inmediatamente y cancela el intento.
   if (usePairingCode) {
@@ -89,29 +89,37 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
     // Cuando el servidor emite el QR, eso significa que el WebSocket está
     // listo y el servidor tiene el qrRef necesario para el pairing code.
-    // Llamamos requestPairingCode aquí, con sesión limpia → funciona.
     if (qr) {
       if (usePairingCode && !inst.pairingCodeRequested) {
         inst.pairingCodeRequested = true;
         inst.status = 'requesting_code';
-        console.log(`[User ${userId}] Servidor listo — solicitando código para ${cleanPhone}...`);
-        try {
-          const code = await sock.requestPairingCode(cleanPhone);
-          const instNow = instances.get(userId);
-          if (instNow) {
-            instNow.pairingCode = code;
-            instNow.qrBase64 = null;
-            instNow.status = 'pairing';
+        console.log(`[User ${userId}] Servidor listo — esperando 2s para solicitar código para ${cleanPhone}...`);
+        
+        // Retraso de 2 segundos para asegurar inicialización completa del socket
+        setTimeout(async () => {
+          const currentInst = instances.get(userId);
+          if (!currentInst || !currentInst.sock) {
+            console.warn(`[User ${userId}] Instancia o socket desapareció antes de solicitar código.`);
+            return;
           }
-          console.log(`[User ${userId}] Código obtenido: ${code} — notificación enviada al teléfono.`);
-        } catch (e) {
-          console.error(`[User ${userId}] Error al solicitar código:`, e.message);
-          const instNow = instances.get(userId);
-          if (instNow) {
-            instNow.status = 'disconnected';
-            instNow.pairingCodeRequested = false;
+          try {
+            const code = await currentInst.sock.requestPairingCode(cleanPhone);
+            const instNow = instances.get(userId);
+            if (instNow) {
+              instNow.pairingCode = code;
+              instNow.qrBase64 = null;
+              instNow.status = 'pairing';
+            }
+            console.log(`[User ${userId}] Código obtenido: ${code} — notificación enviada al teléfono.`);
+          } catch (e) {
+            console.error(`[User ${userId}] Error al solicitar código:`, e.message);
+            const instNow = instances.get(userId);
+            if (instNow) {
+              instNow.status = 'disconnected';
+              instNow.pairingCodeRequested = false;
+            }
           }
-        }
+        }, 2000);
       } else if (!usePairingCode) {
         // Modo QR normal
         inst.qrBase64 = await QRCode.toDataURL(qr);
