@@ -33,8 +33,6 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
   const sessionDir = path.join(AUTH_DIR, userId);
 
   // Para pairing code siempre empezar con sesión limpia.
-  // Con archivos de sesión previos (de un QR anterior) WhatsApp
-  // devuelve 401 inmediatamente y cancela el intento.
   if (usePairingCode) {
     if (fs.existsSync(sessionDir)) {
       fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -52,6 +50,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     version,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
+    mobile: false,                     // <-- IMPORTANTE: modo multi-dispositivo (web)
     auth: {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'silent' })),
@@ -75,6 +74,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     reconnectAttempts: 0,
     usePairingCode,
     pairingCodeRequested: false,
+    pairingCodeGeneratedAt: null,       // para controlar tiempo de expiración
   };
   instances.set(userId, instanceState);
 
@@ -87,15 +87,14 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
 
     console.log(`[User ${userId}] connection.update: connection=${connection}, qr=${!!qr}, pairingCode=${!!pairingCode}`);
 
-    // Cuando el servidor emite el QR, eso significa que el WebSocket está
-    // listo y el servidor tiene el qrRef necesario para el pairing code.
+    // Cuando se emite el QR, el socket está listo para solicitar código de emparejamiento
     if (qr) {
       if (usePairingCode && !inst.pairingCodeRequested) {
         inst.pairingCodeRequested = true;
         inst.status = 'requesting_code';
-        console.log(`[User ${userId}] Servidor listo — esperando 2s para solicitar código para ${cleanPhone}...`);
+        console.log(`[User ${userId}] Servidor listo — esperando 3s para solicitar código para ${cleanPhone}...`);
         
-        // Retraso de 2 segundos para asegurar inicialización completa del socket
+        // Retraso de 3 segundos (como en el conector de referencia)
         setTimeout(async () => {
           const currentInst = instances.get(userId);
           if (!currentInst || !currentInst.sock) {
@@ -109,20 +108,25 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
               instNow.pairingCode = code;
               instNow.qrBase64 = null;
               instNow.status = 'pairing';
+              instNow.pairingCodeGeneratedAt = Date.now();
             }
-            console.log(`[User ${userId}] Código obtenido: ${code} — notificación enviada al teléfono.`);
+            console.log(`[User ${userId}] ✅ Código obtenido: ${code} — notificación enviada al teléfono.`);
           } catch (e) {
-            console.error(`[User ${userId}] Error al solicitar código:`, e.message);
+            console.error(`[User ${userId}] ❌ Error al solicitar código:`, e.message);
             const instNow = instances.get(userId);
             if (instNow) {
               instNow.status = 'disconnected';
               instNow.pairingCodeRequested = false;
             }
           }
-        }, 2000);
+        }, 3000); // 3 segundos
       } else if (!usePairingCode) {
         // Modo QR normal
-        inst.qrBase64 = await QRCode.toDataURL(qr);
+        try {
+          inst.qrBase64 = await QRCode.toDataURL(qr);
+        } catch (e) {
+          console.error(`[User ${userId}] Error generando QR:`, e.message);
+        }
         inst.pairingCode = null;
         inst.status = 'qr_pending';
         console.log(`[User ${userId}] QR generado.`);
@@ -133,6 +137,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       inst.pairingCode = pairingCode;
       inst.qrBase64 = null;
       inst.status = 'pairing';
+      inst.pairingCodeGeneratedAt = Date.now();
       console.log(`[User ${userId}] Código del servidor: ${pairingCode}`);
     }
 
@@ -142,6 +147,8 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       inst.pairingCode = null;
       inst.status = 'connected';
       inst.reconnectAttempts = 0;
+      inst.pairingCodeRequested = false;
+      inst.pairingCodeGeneratedAt = null;
       console.log(`[User ${userId}] ✅ CONECTADO a WhatsApp`);
 
       const settings = await getSettings(userId);
@@ -162,19 +169,28 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       console.log(`[User ${userId}] Conexión cerrada. statusCode=${statusCode}`);
       inst.isConnected = false;
       inst.qrBase64 = null;
-      inst.pairingCode = null;
 
-      if (isLoggedOut) {
-        // 401 puede venir si:
-        // - El usuario cerró sesión desde el teléfono
-        // - El intento de pairing fue rechazado
-        // Limpiamos y paramos; el usuario reconecta manualmente.
+      // Si es 401 (loggedOut) pero estábamos en proceso de pairing y el código se generó hace menos de 2 minutos,
+      // no limpiamos la sesión inmediatamente; damos oportunidad a que el usuario ingrese el código.
+      const codeAge = inst.pairingCodeGeneratedAt ? Date.now() - inst.pairingCodeGeneratedAt : Infinity;
+      const isRecentPairing = inst.usePairingCode && inst.pairingCode && codeAge < 120000; // 2 minutos
+
+      if (isLoggedOut && !isRecentPairing) {
         inst.status = 'disconnected';
+        inst.pairingCode = null;
         console.log(`[User ${userId}] Sesión cerrada (loggedOut). Limpiando archivos.`);
         if (fs.existsSync(sessionDir)) {
           fs.rmSync(sessionDir, { recursive: true, force: true });
         }
         instances.delete(userId);
+      } else if (isLoggedOut && isRecentPairing) {
+        // 401 pero código reciente: podría ser que el usuario aún no lo ingresó, no limpiar sesión aún.
+        inst.status = 'pairing';
+        console.log(`[User ${userId}] Recibido 401 pero el código de emparejamiento es reciente. Esperando entrada del usuario...`);
+        // Reintentar conexión en 5 segundos para dar tiempo
+        inst.reconnectTimer = setTimeout(() => {
+          startUserInstance(userId, cleanPhone, true);
+        }, 5000);
       } else {
         // Error de red u otro: reconectar automáticamente
         inst.status = 'disconnected';
