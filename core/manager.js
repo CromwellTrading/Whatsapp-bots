@@ -23,10 +23,18 @@ function normalizePhoneNumber(phoneNumber) {
   return String(phoneNumber || '').replace(/\D/g, '');
 }
 
-function safeDeleteDir(dirPath) {
+function safeRemoveDir(dirPath) {
   if (fs.existsSync(dirPath)) {
     fs.rmSync(dirPath, { recursive: true, force: true });
   }
+}
+
+function clearInstanceTimers(instance) {
+  if (!instance) return;
+  if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
+  if (instance.pairingCodeTimer) clearTimeout(instance.pairingCodeTimer);
+  instance.reconnectTimer = null;
+  instance.pairingCodeTimer = null;
 }
 
 async function requestPairingCodeForInstance(userId) {
@@ -59,7 +67,6 @@ async function requestPairingCodeForInstance(userId) {
     if (current) {
       current.status = 'disconnected';
       current.pairingCodeRequested = false;
-      current.pairingCode = null;
     }
   }
 }
@@ -68,19 +75,23 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
   const cleanPhone = normalizePhoneNumber(phoneNumber);
   console.log(`[User ${userId}] Iniciando instancia para ${cleanPhone} (pairingCode=${usePairingCode})`);
 
+  // Detener instancia existente
   const existing = instances.get(userId);
-  if (existing?.reconnectTimer) clearTimeout(existing.reconnectTimer);
-  if (existing?.pairingCodeTimer) clearTimeout(existing.pairingCodeTimer);
-  if (existing?.sock) {
-    try { existing.sock.end(); } catch (_) {}
+  if (existing) {
+    clearInstanceTimers(existing);
+    if (existing.sock) {
+      try { existing.sock.end(); } catch (_) {}
+    }
   }
 
   const sessionDir = path.join(AUTH_DIR, userId);
 
   // Para pairing code siempre empezar con sesión limpia.
   if (usePairingCode) {
-    safeDeleteDir(sessionDir);
-    console.log(`[User ${userId}] Sesión anterior eliminada para inicio limpio.`);
+    if (fs.existsSync(sessionDir)) {
+      safeRemoveDir(sessionDir);
+      console.log(`[User ${userId}] Sesión anterior eliminada para inicio limpio.`);
+    }
   }
 
   if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
@@ -93,7 +104,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     version,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
-    mobile: false,
+    mobile: false, // modo multi-dispositivo
     auth: {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'silent' })),
@@ -120,18 +131,20 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     pairingCodeRequested: false,
     pairingCodeGeneratedAt: null,
   };
-
   instances.set(userId, instanceState);
 
   const userBot = createUserBot(userId, sock);
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect, qr, pairingCode } = update;
     const inst = instances.get(userId);
     if (!inst) return;
 
-    console.log(`[User ${userId}] connection.update: connection=${connection}, qr=${!!qr}`);
+    console.log(
+      `[User ${userId}] connection.update: connection=${connection}, qr=${!!qr}, pairingCode=${!!pairingCode}`
+    );
 
+    // En modo pairing code no dependemos del QR para pedir el código.
     if (qr) {
       if (!usePairingCode) {
         try {
@@ -147,6 +160,14 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       }
     }
 
+    if (pairingCode && !inst.pairingCode) {
+      inst.pairingCode = pairingCode;
+      inst.qrBase64 = null;
+      inst.status = 'pairing';
+      inst.pairingCodeGeneratedAt = Date.now();
+      console.log(`[User ${userId}] Código del servidor: ${pairingCode}`);
+    }
+
     if (connection === 'open') {
       inst.isConnected = true;
       inst.qrBase64 = null;
@@ -156,10 +177,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       inst.pairingCodeRequested = false;
       inst.pairingCodeGeneratedAt = null;
 
-      if (inst.pairingCodeTimer) {
-        clearTimeout(inst.pairingCodeTimer);
-        inst.pairingCodeTimer = null;
-      }
+      clearInstanceTimers(inst);
 
       console.log(`[User ${userId}] ✅ CONECTADO a WhatsApp`);
 
@@ -183,37 +201,40 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       inst.qrBase64 = null;
 
       const codeAge = inst.pairingCodeGeneratedAt ? Date.now() - inst.pairingCodeGeneratedAt : Infinity;
-      const isRecentPairing = inst.usePairingCode && inst.pairingCode && codeAge < 120000;
+      const isRecentPairing = inst.usePairingCode && inst.pairingCode && codeAge < 120000; // 2 minutos
 
-      if (inst.pairingCodeTimer) {
-        clearTimeout(inst.pairingCodeTimer);
-        inst.pairingCodeTimer = null;
+      clearInstanceTimers(inst);
+
+      if (isLoggedOut && isRecentPairing) {
+        // CLAVE: no borrar sesión ni reiniciar mientras el pairing sigue reciente.
+        inst.status = 'pairing';
+        inst.pairingCodeRequested = false;
+        console.log(
+          `[User ${userId}] Recibido 401 pero el código de emparejamiento es reciente. ` +
+          `No se borra la sesión ni se reinicia automáticamente. Esperando entrada del usuario...`
+        );
+        return;
       }
 
       if (isLoggedOut && !isRecentPairing) {
         inst.status = 'disconnected';
         inst.pairingCode = null;
         console.log(`[User ${userId}] Sesión cerrada (loggedOut). Limpiando archivos.`);
-        safeDeleteDir(sessionDir);
+        safeRemoveDir(sessionDir);
         instances.delete(userId);
-      } else if (isLoggedOut && isRecentPairing) {
-        inst.status = 'pairing';
-        console.log(`[User ${userId}] Recibido 401 pero el código de emparejamiento es reciente. Esperando entrada del usuario...`);
-
-        inst.reconnectTimer = setTimeout(() => {
-          startUserInstance(userId, cleanPhone, true);
-        }, 5000);
-      } else {
-        inst.status = 'disconnected';
-        const attempt = inst.reconnectAttempts || 0;
-        const delayMs = Math.min(10000 + attempt * 5000, 60000);
-        inst.reconnectAttempts = attempt + 1;
-
-        console.log(`[User ${userId}] Reintentando en ${delayMs / 1000}s (intento ${attempt + 1})...`);
-        inst.reconnectTimer = setTimeout(() => {
-          startUserInstance(userId, cleanPhone, false);
-        }, delayMs);
+        return;
       }
+
+      // Error de red u otro: reconectar automáticamente
+      inst.status = 'disconnected';
+      const attempt = inst.reconnectAttempts || 0;
+      const delayMs = Math.min(10000 + attempt * 5000, 60000);
+      inst.reconnectAttempts = attempt + 1;
+
+      console.log(`[User ${userId}] Reintentando en ${delayMs / 1000}s (intento ${attempt + 1})...`);
+      inst.reconnectTimer = setTimeout(() => {
+        startUserInstance(userId, cleanPhone, false);
+      }, delayMs);
     }
   });
 
@@ -223,11 +244,14 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
     await userBot.handleMessages(messages);
   });
 
-  // Solicitud de pairing code: NO depende del QR.
+  // Solicitud de pairing code sin depender del evento qr.
   if (usePairingCode) {
-    instanceState.pairingCodeTimer = setTimeout(() => {
+    instanceState.pairingCodeTimer = setTimeout(async () => {
       const currentInst = instances.get(userId);
-      if (!currentInst || !currentInst.sock) return;
+      if (!currentInst || !currentInst.sock) {
+        console.warn(`[User ${userId}] Instancia o socket desapareció antes de solicitar código.`);
+        return;
+      }
 
       if (currentInst.sock.authState?.creds?.registered) {
         currentInst.status = 'connected';
@@ -237,7 +261,7 @@ async function startUserInstance(userId, phoneNumber, usePairingCode = false) {
       }
 
       console.log(`[User ${userId}] Solicitando código de emparejamiento para ${cleanPhone}...`);
-      requestPairingCodeForInstance(userId);
+      await requestPairingCodeForInstance(userId);
     }, 3000);
   }
 
@@ -251,8 +275,7 @@ async function initManager() {
 async function stopUserInstance(userId) {
   const instance = instances.get(userId);
   if (instance) {
-    if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-    if (instance.pairingCodeTimer) clearTimeout(instance.pairingCodeTimer);
+    clearInstanceTimers(instance);
     try { instance.sock?.end(); } catch (_) {}
     instances.delete(userId);
   }
@@ -313,13 +336,13 @@ async function getGroupsForUser(userId) {
 async function clearUserSession(userId) {
   const instance = instances.get(userId);
   if (instance) {
-    if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-    if (instance.pairingCodeTimer) clearTimeout(instance.pairingCodeTimer);
+    clearInstanceTimers(instance);
     try { await instance.sock?.logout(); } catch (_) {}
     await stopUserInstance(userId);
   }
+
   const sessionDir = path.join(AUTH_DIR, userId);
-  safeDeleteDir(sessionDir);
+  safeRemoveDir(sessionDir);
   console.log(`[User ${userId}] Sesión eliminada completamente.`);
   return true;
 }
