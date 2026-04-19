@@ -16,6 +16,10 @@ const instances = new Map();
 // Cache compartido para reintentos de mensajes (requerido por Baileys)
 const msgRetryCounterCache = new NodeCache();
 
+// 🔍 DIAGNÓSTICO: Verificar valores reales de DisconnectReason en esta versión de Baileys
+console.log('🔍 DisconnectReason.loggedOut =', DisconnectReason.loggedOut);
+console.log('🔍 DisconnectReason completo =', JSON.stringify(DisconnectReason));
+
 // Directorio base para las sesiones
 const AUTH_DIR = path.join(__dirname, '..', 'auth_states');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -104,9 +108,16 @@ async function startUserInstance(userId, phoneNumber) {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const errorMessage = lastDisconnect?.error?.message || 'sin mensaje';
+      const errorOutput = lastDisconnect?.error?.output || {};
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
 
-      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, isLoggedOut=${isLoggedOut}`);
+      console.log(`[User ${userId}] ❌ Conexión cerrada.`);
+      console.log(`[User ${userId}]    statusCode=${statusCode}`);
+      console.log(`[User ${userId}]    isLoggedOut=${isLoggedOut} (DisconnectReason.loggedOut=${DisconnectReason.loggedOut})`);
+      console.log(`[User ${userId}]    errorMessage=${errorMessage}`);
+      console.log(`[User ${userId}]    errorOutput=${JSON.stringify(errorOutput)}`);
+      console.log(`[User ${userId}]    inst.isConnected al cerrar=${inst.isConnected}`);
 
       inst.isConnected = false;
       inst.status = 'disconnected';
@@ -139,13 +150,17 @@ async function startUserInstance(userId, phoneNumber) {
       if (!inst || inst.isConnected) return;
 
       try {
-        console.log(`[User ${userId}] 🔑 Solicitando código de emparejamiento...`);
+        console.log(`[User ${userId}] 🔑 Solicitando código de emparejamiento para ${cleanPhone}...`);
+        console.log(`[User ${userId}]    creds.registered=${authState.creds.registered}`);
+        console.log(`[User ${userId}]    sock.authState.creds.me=${JSON.stringify(sock.authState?.creds?.me)}`);
         const code = await sock.requestPairingCode(cleanPhone);
+        console.log(`[User ${userId}]    Respuesta raw de Baileys: ${code}`);
         const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
         inst.pairingCode = formattedCode;
         console.log(`[User ${userId}] ✅ Código de emparejamiento: ${formattedCode}`);
       } catch (err) {
         console.error(`[User ${userId}] ❌ Error pidiendo código:`, err?.message || err);
+        console.error(`[User ${userId}]    Error completo:`, JSON.stringify(err?.output || err));
       }
     }, 3000);
   }
