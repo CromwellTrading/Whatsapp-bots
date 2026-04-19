@@ -18,7 +18,9 @@ if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
 async function startUserInstance(userId, phoneNumber) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
-  console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone}`);
+
+  // 🔥 Log del número para verificar formato (código de país + número)
+  console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone} (${cleanPhone.length} dígitos)`);
 
   // Cancelar timer previo si existe
   const existing = instances.get(userId);
@@ -64,7 +66,7 @@ async function startUserInstance(userId, phoneNumber) {
 
   const userBot = createUserBot(userId, sock);
 
-  // 🔥 Flag para pedir el código solo una vez por sesión
+  // Flag para pedir el código solo una vez por sesión
   let pairingCodeRequested = false;
 
   sock.ev.on('connection.update', async (update) => {
@@ -79,7 +81,7 @@ async function startUserInstance(userId, phoneNumber) {
     // Si se pide tarde (múltiples updates de QR), WA no envía la notificación al dispositivo.
     if (qr && !pairingCodeRequested && !authState.creds.registered) {
       pairingCodeRequested = true;
-      inst.qrBase64 = await QRCode.toDataURL(qr); // guardamos el QR como respaldo
+      inst.qrBase64 = await QRCode.toDataURL(qr);
       inst.status = 'qr_pending';
 
       console.log(`[User ${userId}] 🖼️ Primer QR recibido. Solicitando código de emparejamiento...`);
@@ -96,7 +98,7 @@ async function startUserInstance(userId, phoneNumber) {
         console.error(`[User ${userId}] ❌ Error pidiendo código de emparejamiento:`, err?.message || err);
       }
 
-      return; // No continuar procesando este update
+      return;
     }
 
     if (connection === 'open') {
@@ -123,7 +125,7 @@ async function startUserInstance(userId, phoneNumber) {
 
       // 🔥 LÓGICA CORREGIDA DE RECONEXIÓN:
       // - loggedOut (515): el usuario cerró sesión desde WhatsApp → borrar sesión, no reconectar
-      // - 401 sin haber conectado: el código de emparejamiento expiró → reintentar (NO borrar sesión)
+      // - 401 sin haber conectado: el código de emparejamiento expiró → limpiar sesión y reintentar
       // - 401 habiendo conectado antes: sesión revocada → borrar sesión, no reconectar
       // - Cualquier otro error → reintentar
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
@@ -136,19 +138,26 @@ async function startUserInstance(userId, phoneNumber) {
 
       inst.isConnected = false;
       inst.status = 'disconnected';
-
-      // Resetear el flag para que el próximo intento pueda pedir código nuevamente
       pairingCodeRequested = false;
 
       if (isLoggedOut || isSessionRevoked) {
-        // Solo borrar sesión en logout explícito o sesión revocada activa
+        // Logout explícito o sesión revocada → borrar sesión
         console.log(`[User ${userId}] 🗑️ Sesión inválida o cerrada. Eliminando archivos de sesión.`);
         if (fs.existsSync(sessionDir)) {
           fs.rmSync(sessionDir, { recursive: true, force: true });
         }
       } else if (shouldReconnect) {
-        // Código expirado u otro error de red → reintentar
         const delay = isPairingExpired ? 5000 : 10000;
+
+        if (isPairingExpired) {
+          // 🔥 Limpiar sesión corrupta/expirada antes de reintentar
+          // para que el próximo intento arranque limpio y genere un QR nuevo
+          console.log(`[User ${userId}] 🧹 Limpiando sesión expirada antes de reintentar...`);
+          if (fs.existsSync(sessionDir)) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+          }
+        }
+
         console.log(`[User ${userId}] 🔄 Reintentando en ${delay / 1000}s...`);
         inst.reconnectTimer = setTimeout(() => {
           startUserInstance(userId, cleanPhone);
@@ -243,12 +252,51 @@ async function clearUserSession(userId) {
     } catch (e) {}
     await stopUserInstance(userId);
   }
-  const sessionDir = path.join(__dirname, '..', 'auth_states', userId);
+  const sessionDir = path.join(AUTH_DIR, userId);
   if (fs.existsSync(sessionDir)) {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
   console.log(`[User ${userId}] Sesión eliminada completamente.`);
   return true;
+}
+
+// 🔥 NUEVA FUNCIÓN: Eliminar TODAS las sesiones guardadas en disco
+// Detiene todas las instancias activas y borra todas las carpetas de auth_states
+async function clearAllSessions() {
+  console.log('🧹 Eliminando TODAS las sesiones...');
+
+  // 1. Detener todas las instancias activas en memoria
+  const userIds = [...instances.keys()];
+  for (const userId of userIds) {
+    const instance = instances.get(userId);
+    if (instance) {
+      if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
+      try {
+        instance.sock?.end();
+      } catch (e) {}
+    }
+  }
+  instances.clear();
+  console.log(`🛑 ${userIds.length} instancia(s) detenida(s).`);
+
+  // 2. Borrar todos los directorios de sesión del disco
+  let deletedCount = 0;
+  if (fs.existsSync(AUTH_DIR)) {
+    const entries = fs.readdirSync(AUTH_DIR);
+    for (const entry of entries) {
+      const entryPath = path.join(AUTH_DIR, entry);
+      try {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+        deletedCount++;
+        console.log(`🗑️ Sesión eliminada: ${entry}`);
+      } catch (e) {
+        console.error(`❌ Error eliminando sesión ${entry}:`, e.message);
+      }
+    }
+  }
+
+  console.log(`✅ Limpeza completa. ${deletedCount} sesión(es) eliminada(s) del disco.`);
+  return { stopped: userIds.length, deleted: deletedCount };
 }
 
 module.exports = {
@@ -260,5 +308,6 @@ module.exports = {
   startUserIfApproved,
   getGroupsForUser,
   clearUserSession,
+  clearAllSessions,   // 🔥 Exportada para usar desde el router admin
   instances,
 };
