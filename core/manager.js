@@ -133,7 +133,7 @@ async function startUserInstance(userId, phoneNumber) {
   // con un setTimeout de 3s igual que el proyecto que funciona.
   // Esto evita que WhatsApp consolide el flujo QR antes de recibir el request.
   if (!authState.creds.registered) {
-    inst.status = 'qr_pending';
+    instanceState.status = 'qr_pending';
     setTimeout(async () => {
       const inst = instances.get(userId);
       if (!inst || inst.isConnected) return;
