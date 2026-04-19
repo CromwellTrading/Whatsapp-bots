@@ -74,10 +74,9 @@ async function startUserInstance(userId, phoneNumber) {
 
     console.log(`[User ${userId}] 📡 connection.update: connection=${connection}, qr=${!!qr}`);
 
-    // 🔥 FLUJO CORREGIDO: Pedir pairing code en el primer evento QR,
-    // ANTES de que WhatsApp consolide el flujo de autenticación por QR.
-    // El QR y el pairing code son mutuamente excluyentes; si se pide el código
-    // tarde (después de varios updates de QR), WA no envía la notificación al dispositivo.
+    // 🔥 FLUJO CORREGIDO: Pedir pairing code en el primer evento QR.
+    // QR y pairing code son flujos mutuamente excluyentes en WhatsApp.
+    // Si se pide tarde (múltiples updates de QR), WA no envía la notificación al dispositivo.
     if (qr && !pairingCodeRequested && !authState.creds.registered) {
       pairingCodeRequested = true;
       inst.qrBase64 = await QRCode.toDataURL(qr); // guardamos el QR como respaldo
@@ -121,26 +120,39 @@ async function startUserInstance(userId, phoneNumber) {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      // No reconectamos automáticamente si el error es 401 (desautorizado/código caducado)
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 401;
 
-      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
+      // 🔥 LÓGICA CORREGIDA DE RECONEXIÓN:
+      // - loggedOut (515): el usuario cerró sesión desde WhatsApp → borrar sesión, no reconectar
+      // - 401 sin haber conectado: el código de emparejamiento expiró → reintentar (NO borrar sesión)
+      // - 401 habiendo conectado antes: sesión revocada → borrar sesión, no reconectar
+      // - Cualquier otro error → reintentar
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+      const isPairingExpired = statusCode === 401 && !inst.isConnected;
+      const isSessionRevoked = statusCode === 401 && inst.isConnected;
+
+      const shouldReconnect = !isLoggedOut && !isSessionRevoked;
+
+      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, isLoggedOut=${isLoggedOut}, isPairingExpired=${isPairingExpired}, shouldReconnect=${shouldReconnect}`);
+
       inst.isConnected = false;
       inst.status = 'disconnected';
 
-      // 🔥 Resetear el flag para que el próximo intento pueda pedir código nuevamente
+      // Resetear el flag para que el próximo intento pueda pedir código nuevamente
       pairingCodeRequested = false;
 
-      if (shouldReconnect) {
-        console.log(`[User ${userId}] 🔄 Reintentando en 10s...`);
-        inst.reconnectTimer = setTimeout(() => {
-          startUserInstance(userId, cleanPhone);
-        }, 10000);
-      } else if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+      if (isLoggedOut || isSessionRevoked) {
+        // Solo borrar sesión en logout explícito o sesión revocada activa
         console.log(`[User ${userId}] 🗑️ Sesión inválida o cerrada. Eliminando archivos de sesión.`);
         if (fs.existsSync(sessionDir)) {
           fs.rmSync(sessionDir, { recursive: true, force: true });
         }
+      } else if (shouldReconnect) {
+        // Código expirado u otro error de red → reintentar
+        const delay = isPairingExpired ? 5000 : 10000;
+        console.log(`[User ${userId}] 🔄 Reintentando en ${delay / 1000}s...`);
+        inst.reconnectTimer = setTimeout(() => {
+          startUserInstance(userId, cleanPhone);
+        }, delay);
       }
     }
   });
