@@ -2,6 +2,7 @@ const makeWASocket = require('@whiskeysockets/baileys').default;
 const { DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
+const NodeCache = require('node-cache');
 const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
@@ -12,14 +13,15 @@ const { getSettings } = require('../utils/db');
 
 const instances = new Map();
 
+// Cache compartido para reintentos de mensajes (requerido por Baileys)
+const msgRetryCounterCache = new NodeCache();
+
 // Directorio base para las sesiones
 const AUTH_DIR = path.join(__dirname, '..', 'auth_states');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
 async function startUserInstance(userId, phoneNumber) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
-
-  // 🔥 Log del número para verificar formato (código de país + número)
   console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone} (${cleanPhone.length} dígitos)`);
 
   // Cancelar timer previo si existe
@@ -28,7 +30,6 @@ async function startUserInstance(userId, phoneNumber) {
     clearTimeout(existing.reconnectTimer);
   }
 
-  // Usar sistema de archivos para la sesión (carpeta por usuario)
   const sessionDir = path.join(AUTH_DIR, userId);
   if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
@@ -36,20 +37,20 @@ async function startUserInstance(userId, phoneNumber) {
   const { version } = await fetchLatestBaileysVersion();
   console.log(`[User ${userId}] 📦 Baileys version: ${version.join('.')}`);
 
+  // 🔥 CLAVE: Sin 'browser' personalizado y con defaultQueryTimeoutMs: undefined
+  // Replicando exactamente la configuración del proyecto que funciona
   const sock = makeWASocket({
     version,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
+    mobile: false,
     auth: {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'silent' })),
     },
-    // 🔥 Firma de Mac OS para evitar el filtro antispam de Meta
-    browser: ['Mac OS', 'Safari', '10.15.7'],
-    markOnlineOnConnect: true,
-    syncFullHistory: false,
-    connectTimeoutMs: 60000,
-    defaultQueryTimeoutMs: 60000,
+    msgRetryCounterCache,
+    generateHighQualityLinkPreview: true,
+    defaultQueryTimeoutMs: undefined, // 🔥 undefined, no 60000
   });
 
   const instanceState = {
@@ -66,8 +67,7 @@ async function startUserInstance(userId, phoneNumber) {
 
   const userBot = createUserBot(userId, sock);
 
-  // Flag para pedir el código solo una vez por sesión
-  let pairingCodeRequested = false;
+  sock.ev.on('creds.update', () => saveCreds());
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -76,29 +76,11 @@ async function startUserInstance(userId, phoneNumber) {
 
     console.log(`[User ${userId}] 📡 connection.update: connection=${connection}, qr=${!!qr}`);
 
-    // 🔥 FLUJO CORREGIDO: Pedir pairing code en el primer evento QR.
-    // QR y pairing code son flujos mutuamente excluyentes en WhatsApp.
-    // Si se pide tarde (múltiples updates de QR), WA no envía la notificación al dispositivo.
-    if (qr && !pairingCodeRequested && !authState.creds.registered) {
-      pairingCodeRequested = true;
-      inst.qrBase64 = await QRCode.toDataURL(qr);
-      inst.status = 'qr_pending';
-
-      console.log(`[User ${userId}] 🖼️ Primer QR recibido. Solicitando código de emparejamiento...`);
-
-      // Pequeño delay para que el WebSocket de WhatsApp esté completamente listo
-      await new Promise(res => setTimeout(res, 2000));
-
+    // Guardar QR como respaldo visual si llega, pero NO pedir código aquí
+    if (qr) {
       try {
-        const code = await sock.requestPairingCode(cleanPhone);
-        // Formatear el código como XXXX-XXXX para mejor legibilidad
-        inst.pairingCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
-        console.log(`[User ${userId}] ✅ Código de emparejamiento obtenido: ${inst.pairingCode}`);
-      } catch (err) {
-        console.error(`[User ${userId}] ❌ Error pidiendo código de emparejamiento:`, err?.message || err);
-      }
-
-      return;
+        inst.qrBase64 = await QRCode.toDataURL(qr);
+      } catch (_) {}
     }
 
     if (connection === 'open') {
@@ -114,7 +96,7 @@ async function startUserInstance(userId, phoneNumber) {
         const defaultSettings = {
           autoReply: { active: false, text: 'Estoy fuera de servicio', startHour: 23, endHour: 8 },
           tasks: [],
-          statusTasks: []
+          statusTasks: [],
         };
         await supabaseAdmin.from('bot_settings').insert({ user_id: userId, data: defaultSettings });
       }
@@ -122,59 +104,124 @@ async function startUserInstance(userId, phoneNumber) {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-
-      // 🔥 LÓGICA CORREGIDA DE RECONEXIÓN:
-      // - loggedOut (515): el usuario cerró sesión desde WhatsApp → borrar sesión, no reconectar
-      // - 401 sin haber conectado: el código de emparejamiento expiró → limpiar sesión y reintentar
-      // - 401 habiendo conectado antes: sesión revocada → borrar sesión, no reconectar
-      // - Cualquier otro error → reintentar
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-      const isPairingExpired = statusCode === 401 && !inst.isConnected;
-      const isSessionRevoked = statusCode === 401 && inst.isConnected;
 
-      const shouldReconnect = !isLoggedOut && !isSessionRevoked;
-
-      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, isLoggedOut=${isLoggedOut}, isPairingExpired=${isPairingExpired}, shouldReconnect=${shouldReconnect}`);
+      console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, isLoggedOut=${isLoggedOut}`);
 
       inst.isConnected = false;
       inst.status = 'disconnected';
-      pairingCodeRequested = false;
 
-      if (isLoggedOut || isSessionRevoked) {
-        // Logout explícito o sesión revocada → borrar sesión
-        console.log(`[User ${userId}] 🗑️ Sesión inválida o cerrada. Eliminando archivos de sesión.`);
+      if (isLoggedOut) {
+        console.log(`[User ${userId}] 🗑️ Logout explícito. Eliminando sesión.`);
         if (fs.existsSync(sessionDir)) {
           fs.rmSync(sessionDir, { recursive: true, force: true });
         }
-      } else if (shouldReconnect) {
-        const delay = isPairingExpired ? 5000 : 10000;
-
-        if (isPairingExpired) {
-          // 🔥 Limpiar sesión corrupta/expirada antes de reintentar
-          // para que el próximo intento arranque limpio y genere un QR nuevo
-          console.log(`[User ${userId}] 🧹 Limpiando sesión expirada antes de reintentar...`);
-          if (fs.existsSync(sessionDir)) {
-            fs.rmSync(sessionDir, { recursive: true, force: true });
-          }
-        }
-
-        console.log(`[User ${userId}] 🔄 Reintentando en ${delay / 1000}s...`);
+      } else {
+        console.log(`[User ${userId}] 🔄 Reconectando en 5s...`);
         inst.reconnectTimer = setTimeout(() => {
-          startUserInstance(userId, cleanPhone);
-        }, delay);
+          reconnectUserInstance(userId, cleanPhone, sessionDir);
+        }, 5000);
       }
     }
-  });
-
-  sock.ev.on('creds.update', () => {
-    saveCreds();
   });
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     await userBot.handleMessages(messages);
   });
 
+  // 🔥 CLAVE: Pedir el código FUERA del evento connection.update,
+  // con un setTimeout de 3s igual que el proyecto que funciona.
+  // Esto evita que WhatsApp consolide el flujo QR antes de recibir el request.
+  if (!authState.creds.registered) {
+    inst.status = 'qr_pending';
+    setTimeout(async () => {
+      const inst = instances.get(userId);
+      if (!inst || inst.isConnected) return;
+
+      try {
+        console.log(`[User ${userId}] 🔑 Solicitando código de emparejamiento...`);
+        const code = await sock.requestPairingCode(cleanPhone);
+        const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
+        inst.pairingCode = formattedCode;
+        console.log(`[User ${userId}] ✅ Código de emparejamiento: ${formattedCode}`);
+      } catch (err) {
+        console.error(`[User ${userId}] ❌ Error pidiendo código:`, err?.message || err);
+      }
+    }, 3000);
+  }
+
   return sock;
+}
+
+// 🔥 Reconexión usando sesión existente (sin pedir nuevo código)
+async function reconnectUserInstance(userId, cleanPhone, sessionDir) {
+  const existing = instances.get(userId);
+  if (existing?.isConnected || existing?.status === 'connecting') return;
+
+  console.log(`[User ${userId}] 🔄 Reconectando con sesión existente...`);
+
+  const { state: authState, saveCreds } = await useMultiFileAuthState(sessionDir);
+  const { version } = await fetchLatestBaileysVersion();
+
+  const sock = makeWASocket({
+    version,
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: false,
+    auth: {
+      creds: authState.creds,
+      keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'silent' })),
+    },
+    msgRetryCounterCache,
+    defaultQueryTimeoutMs: undefined,
+  });
+
+  const inst = instances.get(userId);
+  if (inst) {
+    inst.sock = sock;
+    inst.status = 'connecting';
+  }
+
+  sock.ev.on('creds.update', () => saveCreds());
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect } = update;
+    const inst = instances.get(userId);
+    if (!inst) return;
+
+    console.log(`[User ${userId}] 📡 [reconexión] connection=${connection}`);
+
+    if (connection === 'open') {
+      inst.isConnected = true;
+      inst.status = 'connected';
+      inst.pairingCode = null;
+      console.log(`[User ${userId}] ✅ Reconectado a WhatsApp`);
+    }
+
+    if (connection === 'close') {
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+
+      console.log(`[User ${userId}] ❌ [reconexión] Cerrado. statusCode=${statusCode}`);
+      inst.isConnected = false;
+      inst.status = 'disconnected';
+
+      if (isLoggedOut) {
+        console.log(`[User ${userId}] 🗑️ Logout. Eliminando sesión.`);
+        if (fs.existsSync(sessionDir)) {
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+      } else {
+        inst.reconnectTimer = setTimeout(() => {
+          reconnectUserInstance(userId, cleanPhone, sessionDir);
+        }, 5000);
+      }
+    }
+  });
+
+  const userBot = createUserBot(userId, sock);
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    await userBot.handleMessages(messages);
+  });
 }
 
 async function initManager() {
@@ -260,26 +307,21 @@ async function clearUserSession(userId) {
   return true;
 }
 
-// 🔥 NUEVA FUNCIÓN: Eliminar TODAS las sesiones guardadas en disco
-// Detiene todas las instancias activas y borra todas las carpetas de auth_states
+// Elimina TODAS las sesiones guardadas en disco y detiene todas las instancias
 async function clearAllSessions() {
   console.log('🧹 Eliminando TODAS las sesiones...');
 
-  // 1. Detener todas las instancias activas en memoria
   const userIds = [...instances.keys()];
   for (const userId of userIds) {
     const instance = instances.get(userId);
     if (instance) {
       if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-      try {
-        instance.sock?.end();
-      } catch (e) {}
+      try { instance.sock?.end(); } catch (e) {}
     }
   }
   instances.clear();
   console.log(`🛑 ${userIds.length} instancia(s) detenida(s).`);
 
-  // 2. Borrar todos los directorios de sesión del disco
   let deletedCount = 0;
   if (fs.existsSync(AUTH_DIR)) {
     const entries = fs.readdirSync(AUTH_DIR);
@@ -295,7 +337,7 @@ async function clearAllSessions() {
     }
   }
 
-  console.log(`✅ Limpeza completa. ${deletedCount} sesión(es) eliminada(s) del disco.`);
+  console.log(`✅ Limpieza completa. ${deletedCount} sesión(es) eliminada(s) del disco.`);
   return { stopped: userIds.length, deleted: deletedCount };
 }
 
@@ -308,6 +350,6 @@ module.exports = {
   startUserIfApproved,
   getGroupsForUser,
   clearUserSession,
-  clearAllSessions,   // 🔥 Exportada para usar desde el router admin
+  clearAllSessions,
   instances,
 };
