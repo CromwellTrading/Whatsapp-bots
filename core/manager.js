@@ -36,15 +36,14 @@ async function startUserInstance(userId, phoneNumber) {
 
   const sock = makeWASocket({
     version,
-    // Reducimos el nivel de logs de pino para que tu consola no colapse de información irrelevante
-    logger: pino({ level: 'silent' }), 
+    logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     auth: {
       creds: authState.creds,
       keys: makeCacheableSignalKeyStore(authState.keys, pino({ level: 'silent' })),
     },
-    // 🔥 SOLUCIÓN 1: Firma de Mac OS para evitar el filtro antispam de Meta
-    browser: ['Mac OS', 'Safari', '10.15.7'], 
+    // 🔥 Firma de Mac OS para evitar el filtro antispam de Meta
+    browser: ['Mac OS', 'Safari', '10.15.7'],
     markOnlineOnConnect: true,
     syncFullHistory: false,
     connectTimeoutMs: 60000,
@@ -65,6 +64,9 @@ async function startUserInstance(userId, phoneNumber) {
 
   const userBot = createUserBot(userId, sock);
 
+  // 🔥 Flag para pedir el código solo una vez por sesión
+  let pairingCodeRequested = false;
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
     const inst = instances.get(userId);
@@ -72,19 +74,30 @@ async function startUserInstance(userId, phoneNumber) {
 
     console.log(`[User ${userId}] 📡 connection.update: connection=${connection}, qr=${!!qr}`);
 
-    if (qr) {
-      inst.qrBase64 = await QRCode.toDataURL(qr);
+    // 🔥 FLUJO CORREGIDO: Pedir pairing code en el primer evento QR,
+    // ANTES de que WhatsApp consolide el flujo de autenticación por QR.
+    // El QR y el pairing code son mutuamente excluyentes; si se pide el código
+    // tarde (después de varios updates de QR), WA no envía la notificación al dispositivo.
+    if (qr && !pairingCodeRequested && !authState.creds.registered) {
+      pairingCodeRequested = true;
+      inst.qrBase64 = await QRCode.toDataURL(qr); // guardamos el QR como respaldo
       inst.status = 'qr_pending';
-      console.log(`[User ${userId}] 🖼️ QR generado. Solicitando código de emparejamiento INMEDIATAMENTE...`);
-      
-      // 🔥 SOLUCIÓN 2: Pedir el código de forma automática e inmediata SIN delays
+
+      console.log(`[User ${userId}] 🖼️ Primer QR recibido. Solicitando código de emparejamiento...`);
+
+      // Pequeño delay para que el WebSocket de WhatsApp esté completamente listo
+      await new Promise(res => setTimeout(res, 2000));
+
       try {
-         const code = await sock.requestPairingCode(cleanPhone);
-         inst.pairingCode = code;
-         console.log(`[User ${userId}] ✅ Código obtenido: ${code} — notificación enviada al teléfono.`);
+        const code = await sock.requestPairingCode(cleanPhone);
+        // Formatear el código como XXXX-XXXX para mejor legibilidad
+        inst.pairingCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
+        console.log(`[User ${userId}] ✅ Código de emparejamiento obtenido: ${inst.pairingCode}`);
       } catch (err) {
-         console.error(`[User ${userId}] ❌ Error pidiendo código:`, err?.message || err);
+        console.error(`[User ${userId}] ❌ Error pidiendo código de emparejamiento:`, err?.message || err);
       }
+
+      return; // No continuar procesando este update
     }
 
     if (connection === 'open') {
@@ -110,10 +123,13 @@ async function startUserInstance(userId, phoneNumber) {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       // No reconectamos automáticamente si el error es 401 (desautorizado/código caducado)
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 401;
-      
+
       console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode}, shouldReconnect=${shouldReconnect}`);
       inst.isConnected = false;
       inst.status = 'disconnected';
+
+      // 🔥 Resetear el flag para que el próximo intento pueda pedir código nuevamente
+      pairingCodeRequested = false;
 
       if (shouldReconnect) {
         console.log(`[User ${userId}] 🔄 Reintentando en 10s...`);
@@ -123,13 +139,13 @@ async function startUserInstance(userId, phoneNumber) {
       } else if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
         console.log(`[User ${userId}] 🗑️ Sesión inválida o cerrada. Eliminando archivos de sesión.`);
         if (fs.existsSync(sessionDir)) {
-           fs.rmSync(sessionDir, { recursive: true, force: true });
+          fs.rmSync(sessionDir, { recursive: true, force: true });
         }
       }
     }
   });
 
-  sock.ev.on('creds.update', (creds) => {
+  sock.ev.on('creds.update', () => {
     saveCreds();
   });
 
