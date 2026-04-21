@@ -22,72 +22,54 @@ const msgRetryCounterCache = new NodeCache();
 const AUTH_DIR = path.join(__dirname, '..', 'auth_states');
 if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-// Logger de debug de Baileys — escribe a consola con nivel debug
-// para ver TODOS los mensajes internos de Baileys
-const makeBaileysDebugLogger = (userId) => {
-  const prefix = `[WA-INTERNAL User:${userId.slice(0,8)}]`;
-  return {
-    level: 'trace',
-    trace: (obj, msg) => console.log(`${prefix} TRACE`, msg || '', typeof obj === 'object' ? JSON.stringify(obj).slice(0, 300) : obj),
-    debug: (obj, msg) => console.log(`${prefix} DEBUG`, msg || '', typeof obj === 'object' ? JSON.stringify(obj).slice(0, 300) : obj),
-    info:  (obj, msg) => console.log(`${prefix} INFO `, msg || '', typeof obj === 'object' ? JSON.stringify(obj).slice(0, 300) : obj),
-    warn:  (obj, msg) => console.warn(`${prefix} WARN `, msg || '', typeof obj === 'object' ? JSON.stringify(obj).slice(0, 300) : obj),
-    error: (obj, msg) => console.error(`${prefix} ERROR`, msg || '', typeof obj === 'object' ? JSON.stringify(obj).slice(0, 300) : obj),
-    fatal: (obj, msg) => console.error(`${prefix} FATAL`, msg || '', typeof obj === 'object' ? JSON.stringify(obj).slice(0, 300) : obj),
-    child: function() { return this; },
-  };
-};
+// Limpieza forzada de sesión parcial: si hay me.id pero no está registrada → sesión inválida
+function clearPartialSession(sessionDir) {
+  if (fs.existsSync(sessionDir)) {
+    try {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      console.log(`   🧹 Sesión parcial limpiada: ${sessionDir}`);
+    } catch (e) {
+      console.error(`   ⚠️ Error limpiando sesión parcial:`, e.message);
+    }
+  }
+}
 
-async function startUserInstance(userId, phoneNumber) {
+async function startUserInstance(userId, phoneNumber, usePairingCode = true) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
   console.log(`\n${'='.repeat(60)}`);
-  console.log(`[User ${userId}] 🚀 INICIO DE INSTANCIA`);
-  console.log(`[User ${userId}]   Número original: "${phoneNumber}"`);
-  console.log(`[User ${userId}]   Número limpio:   "${cleanPhone}" (${cleanPhone.length} dígitos)`);
-  if (cleanPhone.length < 10) {
-    console.error(`[User ${userId}] ❌ ADVERTENCIA CRÍTICA: Número muy corto — falta código de país`);
-  }
+  console.log(`[User ${userId.slice(0,8)}] 🚀 INICIO — Número: +${cleanPhone} — Modo: ${usePairingCode ? 'PAIRING CODE' : 'QR'}`);
   console.log(`${'='.repeat(60)}\n`);
 
   // Cerrar instancia previa completamente
   const existing = instances.get(userId);
   if (existing) {
-    console.log(`[User ${userId}] 🔄 Cerrando instancia previa (status=${existing.status})...`);
     if (existing.reconnectTimer) clearTimeout(existing.reconnectTimer);
     if (existing.pairingTimer) clearTimeout(existing.pairingTimer);
-    try { existing.sock?.end(undefined); } catch (e) { console.log(`[User ${userId}]   Error cerrando sock anterior:`, e.message); }
+    try { existing.sock?.end(undefined); } catch (e) {}
     instances.delete(userId);
-    console.log(`[User ${userId}]   Esperando 1.5s para cierre limpio...`);
     await new Promise(r => setTimeout(r, 1500));
   }
 
   const sessionDir = path.join(AUTH_DIR, userId);
-  const sessionExists = fs.existsSync(sessionDir);
-  console.log(`[User ${userId}] 📁 Directorio de sesión: ${sessionDir}`);
-  console.log(`[User ${userId}]   ¿Existe sesión guardada? ${sessionExists}`);
-  if (sessionExists) {
-    const files = fs.readdirSync(sessionDir);
-    console.log(`[User ${userId}]   Archivos en sesión: [${files.join(', ')}]`);
-  }
-  if (!sessionExists) fs.mkdirSync(sessionDir, { recursive: true });
+  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
   const { state: authState, saveCreds } = await useMultiFileAuthState(sessionDir);
-  console.log(`[User ${userId}] 🔐 Estado de auth cargado:`);
-  console.log(`[User ${userId}]   creds.registered = ${authState.creds.registered}`);
-  console.log(`[User ${userId}]   creds.me = ${JSON.stringify(authState.creds.me)}`);
-  console.log(`[User ${userId}]   creds.pairingCode = ${authState.creds.pairingCode}`);
-  console.log(`[User ${userId}]   noiseKey.public existe = ${!!authState.creds.noiseKey?.public}`);
-  console.log(`[User ${userId}]   pairingEphemeralKeyPair existe = ${!!authState.creds.pairingEphemeralKeyPair}`);
+  console.log(`[User ${userId.slice(0,8)}] Auth: registered=${authState.creds.registered}, me=${authState.creds.me?.id}`);
 
-  const { version, isLatest } = await fetchLatestBaileysVersion();
-  console.log(`[User ${userId}] 📦 Baileys version: ${version.join('.')} (isLatest=${isLatest})`);
+  // Si hay sesión parcial (me.id set pero no registered), es un estado inválido → limpiar
+  if (authState.creds.me?.id && !authState.creds.registered) {
+    console.log(`[User ${userId.slice(0,8)}] ⚠️ Sesión parcial detectada → limpiando`);
+    clearPartialSession(sessionDir);
+    fs.mkdirSync(sessionDir, { recursive: true });
+    // Reiniciar con sesión limpia
+    return startUserInstance(userId, phoneNumber, usePairingCode);
+  }
 
-  const baileysLogger = makeBaileysDebugLogger(userId);
+  const { version } = await fetchLatestBaileysVersion();
 
-  console.log(`[User ${userId}] 🔌 Creando socket WASocket...`);
   const sock = makeWASocket({
     version,
-    logger: baileysLogger,
+    logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     mobile: false,
     auth: {
@@ -97,12 +79,14 @@ async function startUserInstance(userId, phoneNumber) {
     msgRetryCounterCache,
     generateHighQualityLinkPreview: true,
     defaultQueryTimeoutMs: undefined,
+    // QR timeout largo: da más tiempo para que funcione el pairing code SI la notificación llega
+    qrTimeout: 60000,
   });
-  console.log(`[User ${userId}] ✅ Socket creado`);
 
   const instanceState = {
     userId,
     phoneNumber: cleanPhone,
+    usePairingCode,
     status: 'connecting',
     sock,
     qrBase64: null,
@@ -111,52 +95,38 @@ async function startUserInstance(userId, phoneNumber) {
     isConnected: false,
     reconnectTimer: null,
     pairingTimer: null,
+    pairingCodeRequested: false,
   };
   instances.set(userId, instanceState);
 
   const userBot = createUserBot(userId, sock);
 
-  sock.ev.on('creds.update', () => {
-    console.log(`[User ${userId}] 💾 creds.update → guardando credenciales`);
-    saveCreds();
-  });
-
-  // Loguear TODOS los eventos del socket
-  const ALL_EVENTS = [
-    'connection.update', 'creds.update', 'messaging-history.set',
-    'chats.upsert', 'chats.update', 'chats.phoneNumberShare', 'chats.delete',
-    'presence.update', 'contacts.upsert', 'contacts.update',
-    'messages.delete', 'messages.update', 'messages.upsert', 'messages.media-update',
-    'messages.reaction', 'message-receipt.update', 'groups.upsert', 'groups.update',
-    'group-participants.update', 'blocklist.set', 'blocklist.update',
-    'call', 'labels.association', 'labels.edit',
-  ];
-
-  for (const event of ALL_EVENTS) {
-    if (event === 'connection.update' || event === 'creds.update' || event === 'messages.upsert') continue;
-    sock.ev.on(event, (data) => {
-      const preview = JSON.stringify(data).slice(0, 200);
-      console.log(`[User ${userId}] 📨 EVENTO [${event}]:`, preview);
-    });
-  }
+  sock.ev.on('creds.update', () => saveCreds());
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr, isNewLogin, receivedPendingNotifications } = update;
-    console.log(`\n[User ${userId}] ━━━ connection.update ━━━`);
-    console.log(`[User ${userId}]   connection                  = ${connection}`);
-    console.log(`[User ${userId}]   qr                          = ${!!qr}`);
-    console.log(`[User ${userId}]   isNewLogin                  = ${isNewLogin}`);
-    console.log(`[User ${userId}]   receivedPendingNotifications= ${receivedPendingNotifications}`);
-    if (lastDisconnect) {
-      console.log(`[User ${userId}]   lastDisconnect.statusCode   = ${lastDisconnect?.error?.output?.statusCode}`);
-      console.log(`[User ${userId}]   lastDisconnect.message      = ${lastDisconnect?.error?.message}`);
-    }
-
+    const { connection, lastDisconnect, qr, isNewLogin } = update;
     const inst = instances.get(userId);
-    if (!inst) { console.log(`[User ${userId}]   ⚠️ inst ya no existe — ignorando`); return; }
+    if (!inst) return;
 
+    // QR disponible
     if (qr) {
-      console.log(`[User ${userId}]   ⚠️ QR recibido — ignorado (modo código de emparejamiento)`);
+      console.log(`[User ${userId.slice(0,8)}] 📷 QR recibido`);
+      try {
+        inst.qrBase64 = await QRCode.toDataURL(qr, { width: 280, margin: 2 });
+      } catch (e) {
+        console.error(`[User ${userId.slice(0,8)}] Error generando QR:`, e.message);
+      }
+
+      // Si estamos en modo pairing code, solicitar el código al recibir el PRIMER QR
+      if (usePairingCode && !inst.pairingCodeRequested && !authState.creds.registered) {
+        inst.pairingCodeRequested = true;
+        if (inst.pairingTimer) clearTimeout(inst.pairingTimer);
+        inst.pairingTimer = setTimeout(async () => {
+          const currentInst = instances.get(userId);
+          if (!currentInst || currentInst.isConnected) return;
+          await requestPairingCodeForInstance(sock, userId, cleanPhone, sessionDir);
+        }, 3000); // 3 segundos después del primer QR
+      }
     }
 
     if (connection === 'open') {
@@ -164,11 +134,10 @@ async function startUserInstance(userId, phoneNumber) {
       inst.qrBase64 = null;
       inst.pairingCode = null;
       inst.status = 'connected';
-      console.log(`[User ${userId}] ✅ ¡CONECTADO A WHATSAPP!`);
+      console.log(`[User ${userId.slice(0,8)}] ✅ CONECTADO`);
 
       const settings = await getSettings(userId);
       if (!settings) {
-        console.log(`[User ${userId}] 📝 Creando configuración por defecto...`);
         const defaultSettings = {
           autoReply: { active: false, text: 'Estoy fuera de servicio', startHour: 23, endHour: 8 },
           tasks: [],
@@ -180,91 +149,87 @@ async function startUserInstance(userId, phoneNumber) {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const errMsg = lastDisconnect?.error?.message || '';
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-      console.log(`[User ${userId}] ❌ CONEXIÓN CERRADA`);
-      console.log(`[User ${userId}]   statusCode = ${statusCode}`);
-      console.log(`[User ${userId}]   isLoggedOut = ${isLoggedOut}`);
+      const isQRExhausted = statusCode === 408 || errMsg.includes('QR refs attempts ended');
+      const isUnauthorized = statusCode === 401;
+
+      console.log(`[User ${userId.slice(0,8)}] ❌ Conexión cerrada — statusCode=${statusCode} msg="${errMsg}"`);
 
       inst.isConnected = false;
       inst.status = 'disconnected';
+      inst.pairingCode = null;
+      inst.qrBase64 = null;
 
       if (isLoggedOut) {
-        console.log(`[User ${userId}] 🗑️ Logout — eliminando sesión`);
-        if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
+        console.log(`[User ${userId.slice(0,8)}] 🗑️ Logout → eliminando sesión`);
+        clearPartialSession(sessionDir);
+      } else if (isQRExhausted || isUnauthorized) {
+        // QR agotado (408) o sin autorización (401): la sesión parcial causará 401 en el próximo intento
+        // → limpiar sesión y reintentar desde cero
+        console.log(`[User ${userId.slice(0,8)}] ⚠️ ${isQRExhausted ? 'QR agotado' : '401 no autorizado'} → limpiando sesión parcial`);
+        clearPartialSession(sessionDir);
+        inst.reconnectTimer = setTimeout(() => startUserInstance(userId, cleanPhone, usePairingCode), 5000);
       } else {
-        console.log(`[User ${userId}] 🔄 Reconectando en 5s...`);
-        inst.reconnectTimer = setTimeout(() => reconnectUserInstance(userId, cleanPhone, sessionDir), 5000);
+        console.log(`[User ${userId.slice(0,8)}] 🔄 Reconectando en 5s...`);
+        inst.reconnectTimer = setTimeout(() => reconnectUserInstance(userId, cleanPhone, sessionDir, usePairingCode), 5000);
       }
     }
   });
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
-    console.log(`[User ${userId}] 📩 messages.upsert: ${messages.length} mensaje(s)`);
     await userBot.handleMessages(messages);
   });
 
-  // Solicitar código de emparejamiento tras 3 segundos
-  if (!authState.creds.registered) {
-    instanceState.status = 'requesting_code';
-    console.log(`[User ${userId}] ⏳ Programando solicitud de código en 3 segundos...`);
-
-    instanceState.pairingTimer = setTimeout(async () => {
-      const inst = instances.get(userId);
-      if (!inst) { console.log(`[User ${userId}] ⚠️ Timer: inst ya no existe`); return; }
-      if (inst.isConnected) { console.log(`[User ${userId}] ℹ️ Timer: ya conectado, no se necesita código`); return; }
-
-      console.log(`\n[User ${userId}] ━━━ SOLICITANDO CÓDIGO DE EMPAREJAMIENTO ━━━`);
-      console.log(`[User ${userId}]   Número: +${cleanPhone} (${cleanPhone.length} dígitos)`);
-      console.log(`[User ${userId}]   sock.authState.creds.registered = ${sock.authState?.creds?.registered}`);
-      console.log(`[User ${userId}]   sock.authState.creds.me = ${JSON.stringify(sock.authState?.creds?.me)}`);
-      console.log(`[User ${userId}]   sock.authState.creds.pairingCode antes = ${sock.authState?.creds?.pairingCode}`);
-
-      try {
-        if (!sock.authState.creds.registered) {
-          console.log(`[User ${userId}]   Llamando sock.requestPairingCode("${cleanPhone}")...`);
-          const code = await sock.requestPairingCode(cleanPhone);
-
-          console.log(`[User ${userId}]   ✅ Respuesta de requestPairingCode: "${code}"`);
-          console.log(`[User ${userId}]   sock.authState.creds.pairingCode después = ${sock.authState?.creds?.pairingCode}`);
-          console.log(`[User ${userId}]   sock.authState.creds.me después = ${JSON.stringify(sock.authState?.creds?.me)}`);
-
-          const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
-          const currentInst = instances.get(userId);
-          if (currentInst) {
-            currentInst.pairingCode = formattedCode;
-            currentInst.pairingCodeRequestedAt = Date.now();
-            currentInst.status = 'pairing';
-          }
-          console.log(`[User ${userId}] ✅ CÓDIGO LISTO: ${formattedCode}`);
-          console.log(`[User ${userId}]   WhatsApp debería haber enviado notificación a +${cleanPhone}`);
-          console.log(`[User ${userId}]   Esperando que el usuario acepte y vincule...`);
-        } else {
-          console.log(`[User ${userId}] ℹ️ Sesión ya registrada en socket, no necesita código`);
-          if (inst) inst.status = 'connecting';
-        }
-      } catch (err) {
-        console.error(`\n[User ${userId}] ❌ ERROR al pedir código de emparejamiento:`);
-        console.error(`[User ${userId}]   message: ${err?.message}`);
-        console.error(`[User ${userId}]   output: ${JSON.stringify(err?.output)}`);
-        console.error(`[User ${userId}]   stack: ${err?.stack?.split('\n').slice(0,3).join(' | ')}`);
-        const currentInst = instances.get(userId);
-        if (currentInst) currentInst.status = 'disconnected';
-      }
-    }, 3000);
-  } else {
-    console.log(`[User ${userId}] ℹ️ Sesión ya registrada (creds.registered=true) — reconectando sin código`);
+  // Si ya está registrado (reconexión de sesión existente), no pedir código
+  if (authState.creds.registered) {
+    console.log(`[User ${userId.slice(0,8)}] ℹ️ Sesión registrada → reconectando`);
   }
 
   return sock;
 }
 
-async function reconnectUserInstance(userId, cleanPhone, sessionDir) {
-  const existing = instances.get(userId);
-  if (existing?.isConnected || existing?.status === 'connecting') return;
+async function requestPairingCodeForInstance(sock, userId, cleanPhone, sessionDir) {
+  const inst = instances.get(userId);
+  if (!inst) return;
+  if (inst.isConnected) return;
 
-  console.log(`[User ${userId}] 🔄 Reconectando con sesión existente...`);
+  console.log(`[User ${userId.slice(0,8)}] 📲 Solicitando código de emparejamiento para +${cleanPhone}...`);
+  try {
+    const code = await sock.requestPairingCode(cleanPhone);
+    const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
+    const currentInst = instances.get(userId);
+    if (currentInst) {
+      currentInst.pairingCode = formattedCode;
+      currentInst.pairingCodeRequestedAt = Date.now();
+      currentInst.status = 'pairing';
+    }
+    console.log(`[User ${userId.slice(0,8)}] ✅ CÓDIGO: ${formattedCode}`);
+  } catch (err) {
+    console.error(`[User ${userId.slice(0,8)}] ❌ Error solicitando código:`, err?.message);
+  }
+}
+
+async function reconnectUserInstance(userId, cleanPhone, sessionDir, usePairingCode) {
+  const existing = instances.get(userId);
+  if (existing?.isConnected) return;
+
+  if (!fs.existsSync(sessionDir)) {
+    console.log(`[User ${userId.slice(0,8)}] ℹ️ Sin sesión guardada — iniciando nueva`);
+    return startUserInstance(userId, cleanPhone, usePairingCode);
+  }
+
+  console.log(`[User ${userId.slice(0,8)}] 🔄 Reconectando con sesión existente...`);
 
   const { state: authState, saveCreds } = await useMultiFileAuthState(sessionDir);
+
+  // Verificar sesión parcial
+  if (authState.creds.me?.id && !authState.creds.registered) {
+    console.log(`[User ${userId.slice(0,8)}] ⚠️ Sesión parcial detectada en reconexión → limpiando`);
+    clearPartialSession(sessionDir);
+    return startUserInstance(userId, cleanPhone, usePairingCode);
+  }
+
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -277,41 +242,52 @@ async function reconnectUserInstance(userId, cleanPhone, sessionDir) {
     },
     msgRetryCounterCache,
     defaultQueryTimeoutMs: undefined,
+    qrTimeout: 60000,
   });
 
   const inst = instances.get(userId);
   if (inst) {
     inst.sock = sock;
     inst.status = 'connecting';
+    inst.pairingCodeRequested = false;
   }
 
   sock.ev.on('creds.update', () => saveCreds());
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
     const inst = instances.get(userId);
     if (!inst) return;
 
-    console.log(`[User ${userId}] 📡 [reconexión] connection=${connection}`);
+    if (qr) {
+      console.log(`[User ${userId.slice(0,8)}] 📷 QR (reconexión)`);
+      try { inst.qrBase64 = await QRCode.toDataURL(qr, { width: 280, margin: 2 }); } catch (e) {}
+    }
 
     if (connection === 'open') {
       inst.isConnected = true;
       inst.status = 'connected';
       inst.pairingCode = null;
-      console.log(`[User ${userId}] ✅ Reconectado`);
+      inst.qrBase64 = null;
+      console.log(`[User ${userId.slice(0,8)}] ✅ Reconectado`);
     }
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const errMsg = lastDisconnect?.error?.message || '';
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-      console.log(`[User ${userId}] ❌ [reconexión] Cerrado. statusCode=${statusCode}`);
+      const isQRExhausted = statusCode === 408 || errMsg.includes('QR refs attempts ended');
+      const isUnauthorized = statusCode === 401;
+
+      console.log(`[User ${userId.slice(0,8)}] ❌ Cerrado (reconex) — ${statusCode}`);
       inst.isConnected = false;
       inst.status = 'disconnected';
 
-      if (isLoggedOut) {
-        if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
+      if (isLoggedOut || isQRExhausted || isUnauthorized) {
+        clearPartialSession(sessionDir);
+        inst.reconnectTimer = setTimeout(() => startUserInstance(userId, cleanPhone, usePairingCode), 5000);
       } else {
-        inst.reconnectTimer = setTimeout(() => reconnectUserInstance(userId, cleanPhone, sessionDir), 5000);
+        inst.reconnectTimer = setTimeout(() => reconnectUserInstance(userId, cleanPhone, sessionDir, usePairingCode), 5000);
       }
     }
   });
@@ -323,7 +299,7 @@ async function reconnectUserInstance(userId, cleanPhone, sessionDir) {
 }
 
 async function initManager() {
-  console.log('👥 Manager inicializado. Las conexiones se establecerán bajo demanda.');
+  console.log('👥 Manager inicializado.');
 }
 
 async function stopUserInstance(userId) {
@@ -346,6 +322,7 @@ function getUserStatus(userId) {
     pairingCodeRequestedAt: instance.pairingCodeRequestedAt,
     phoneNumber: instance.phoneNumber,
     status: instance.status,
+    usePairingCode: instance.usePairingCode,
   };
 }
 
@@ -397,8 +374,8 @@ async function clearUserSession(userId) {
     await stopUserInstance(userId);
   }
   const sessionDir = path.join(AUTH_DIR, userId);
-  if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
-  console.log(`[User ${userId}] Sesión eliminada completamente.`);
+  clearPartialSession(sessionDir);
+  console.log(`[User ${userId.slice(0,8)}] Sesión eliminada completamente.`);
   return true;
 }
 

@@ -324,13 +324,13 @@
             <div class="connect-methods">
               <div class="connect-card" id="connectQR">
                 <div class="method-icon">📷</div>
-                <h3>Código QR</h3>
-                <p>Escanea el QR desde tu teléfono</p>
+                <h3>Escanear QR</h3>
+                <p>Rápido y confiable desde tu teléfono</p>
               </div>
               <div class="connect-card" id="connectCode">
                 <div class="method-icon">🔢</div>
                 <h3>Código de 8 dígitos</h3>
-                <p>Recibe notificación en tu WhatsApp</p>
+                <p>Sin necesidad de escanear</p>
               </div>
             </div>
           </div>
@@ -340,24 +340,36 @@
             <p id="connectingMsg" style="color:#666;">Conectando...</p>
           </div>
 
+          <!-- QR Section: siempre visible cuando hay QR disponible -->
           <div id="qrSection" style="display:none;">
             <div class="qr-box" id="qrContainer"></div>
-            <p style="text-align:center; font-size:0.85em; color:#888; margin-top:8px;">Abre WhatsApp → Más opciones → Dispositivos vinculados → Vincular dispositivo</p>
+            <p style="text-align:center; font-size:0.85em; color:#444; margin-top:10px; font-weight:500;">
+              📱 Abre WhatsApp → <strong>⋮ → Dispositivos vinculados → Vincular dispositivo</strong>
+            </p>
+            <p style="text-align:center; font-size:0.8em; color:#888; margin-top:4px;">Escanea el código QR con la cámara de WhatsApp</p>
+
+            <!-- Código de emparejamiento como alternativa (dentro de la misma pantalla) -->
+            <div id="pairingSubSection" style="display:none; margin-top:18px; border-top:1px solid #e0e0e0; padding-top:16px;">
+              <p style="text-align:center; font-size:0.82em; color:#888; margin-bottom:8px;">
+                ¿No puedes escanear? Si te llegó una notificación de WhatsApp, usa este código:
+              </p>
+              <div style="background:#f8fffe; border:1.5px solid #25d366; border-radius:10px; padding:14px; text-align:center;">
+                <p style="font-size:0.82em; color:#666; margin-bottom:4px;">Código de emparejamiento:</p>
+                <div class="pairing-code" id="pairingCodeDisplay" style="font-size:1.8em; letter-spacing:5px;">—</div>
+                <p id="pairingExpiry" style="font-size:0.78em; color:#888; margin-top:4px;"></p>
+              </div>
+            </div>
           </div>
 
+          <!-- Pairing-only Section (cuando se usó modo código sin QR visible aún) -->
           <div id="pairingSection" style="display:none;">
             <div class="pairing-box">
               <p style="font-size:0.9em; color:#666; margin-bottom:4px;">Tu código de vinculación:</p>
-              <div class="pairing-code" id="pairingCodeDisplay">—</div>
-              <p id="pairingExpiry" style="font-size:0.8em; color:#888; margin-bottom:12px;"></p>
+              <div class="pairing-code" id="pairingCodeDisplayAlt">—</div>
+              <p id="pairingExpiryAlt" style="font-size:0.8em; color:#888; margin-bottom:12px;"></p>
               <div class="pairing-instructions">
-                <strong style="display:block; margin-bottom:8px; color:#d32f2f;">⚠️ Debes aceptar la notificación que llega a tu WhatsApp</strong>
-                1. Abre <strong>WhatsApp</strong> en tu teléfono<br>
-                2. Ve a <strong>⋮ → Dispositivos vinculados → Vincular dispositivo</strong><br>
-                3. Toca <strong>"Vincular con número de teléfono"</strong> (en vez de escanear QR)<br>
-                4. Ingresa tu número completo con código de país (ej: <strong>5312345678</strong>)<br>
-                5. WhatsApp te enviará una notificación — <strong>acéptala</strong><br>
-                6. Luego ingresa el código de 8 dígitos de arriba
+                <strong style="display:block; margin-bottom:8px; color:#d32f2f;">⚠️ Requiere que WhatsApp te envíe una notificación push</strong>
+                Si no recibes notificación, usa el <strong>botón QR</strong> de arriba para conectar escaneando.
               </div>
               <button class="btn btn-gray btn-sm" style="margin-top:14px;" id="regenerateCodeBtn">🔄 Generar nuevo código</button>
             </div>
@@ -672,39 +684,60 @@ function renderStatus(s) {
   const qrSection = document.getElementById('qrSection');
   const pairingSection = document.getElementById('pairingSection');
   const connectedSection = document.getElementById('connectedSection');
+  const pairingSubSection = document.getElementById('pairingSubSection');
 
   connectSection.style.display = 'none';
   connectingSection.style.display = 'none';
   qrSection.style.display = 'none';
   pairingSection.style.display = 'none';
   connectedSection.style.display = 'none';
+  if (pairingSubSection) pairingSubSection.style.display = 'none';
 
   if (s.connected) {
     badge.textContent = '🟢 Conectado';
     badge.className = 'badge badge-green';
     connectedSection.style.display = 'block';
     stopStatusPoller();
-  } else if (s.status === 'pairing' || s.pairingCode) {
+
+  } else if (s.qr) {
+    // QR disponible (modo QR puro o modo pairing con QR como fallback)
+    badge.textContent = '🟡 Esperando escaneo...';
+    badge.className = 'badge badge-yellow';
+    qrSection.style.display = 'block';
+
+    // Mostrar imagen QR directamente desde base64 (sin llamada extra a /qr)
+    const container = document.getElementById('qrContainer');
+    container.innerHTML = `<img src="${s.qr}" alt="QR Code" style="width:260px;height:260px;border-radius:10px;border:3px solid #25d366;" />`;
+
+    // Si además hay código de emparejamiento, mostrarlo debajo del QR
+    if (s.pairingCode && pairingSubSection) {
+      pairingSubSection.style.display = 'block';
+      const raw = s.pairingCode || '';
+      document.getElementById('pairingCodeDisplay').textContent = raw.match(/.{1,4}/g)?.join('-') || raw;
+      updatePairingExpiry(s.pairingCodeRequestedAt, 'pairingExpiry');
+    }
+    startStatusPoller();
+
+  } else if (s.pairingCode) {
+    // Solo código, QR aún no generado
     badge.textContent = '🟡 Vinculando...';
     badge.className = 'badge badge-yellow';
     pairingSection.style.display = 'block';
     const raw = s.pairingCode || '';
-    document.getElementById('pairingCodeDisplay').textContent = raw.match(/.{1,4}/g)?.join('-') || raw;
-    updatePairingExpiry(s.pairingCodeRequestedAt);
+    document.getElementById('pairingCodeDisplayAlt').textContent = raw.match(/.{1,4}/g)?.join('-') || raw;
+    updatePairingExpiry(s.pairingCodeRequestedAt, 'pairingExpiryAlt');
     startStatusPoller();
-  } else if (s.status === 'qr_pending' && s.qrAvailable) {
-    badge.textContent = '🟡 Esperando vinculación';
-    badge.className = 'badge badge-yellow';
-    qrSection.style.display = 'block';
-    loadQR();
-    startStatusPoller();
-  } else if (s.status === 'connecting' || s.status === 'requesting_code') {
+
+  } else if (s.status === 'connecting' || s.status === 'pairing' || s.status === 'requesting_code') {
     badge.textContent = '🔵 Conectando...';
     badge.className = 'badge badge-blue';
     connectingSection.style.display = 'block';
-    document.getElementById('connectingMsg').textContent =
-      s.status === 'requesting_code' ? 'Solicitando código, revisa tu WhatsApp...' : 'Estableciendo conexión...';
+    let msg = 'Estableciendo conexión...';
+    if (s.status === 'pairing') msg = 'Generando código y QR, espera unos segundos...';
+    if (s.status === 'requesting_code') msg = 'Solicitando código de emparejamiento...';
+    document.getElementById('connectingMsg').textContent = msg;
     startStatusPoller();
+
   } else {
     badge.textContent = '🔴 Desconectado';
     badge.className = 'badge badge-red';
@@ -728,19 +761,21 @@ function stopStatusPoller() {
   if (statusPollerInterval) { clearInterval(statusPollerInterval); statusPollerInterval = null; }
 }
 
-function updatePairingExpiry(requestedAt) {
-  const el = document.getElementById('pairingExpiry');
-  if (!el) return;
-  if (!requestedAt) { el.textContent = ''; return; }
-  // Los códigos de emparejamiento de WhatsApp expiran en 160 segundos
-  const expiresAt = requestedAt + 160 * 1000;
-  const remaining = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
-  if (remaining === 0) {
-    el.textContent = '⏰ Código expirado — genera uno nuevo';
-    el.style.color = '#c62828';
-  } else {
-    el.textContent = `⏱ Expira en ${remaining}s`;
-    el.style.color = remaining < 30 ? '#e65100' : '#888';
+function updatePairingExpiry(requestedAt, elId) {
+  const ids = elId ? [elId] : ['pairingExpiry', 'pairingExpiryAlt'];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (!requestedAt) { el.textContent = ''; continue; }
+    const expiresAt = requestedAt + 160 * 1000;
+    const remaining = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+    if (remaining === 0) {
+      el.textContent = '⏰ Código expirado — genera uno nuevo';
+      el.style.color = '#c62828';
+    } else {
+      el.textContent = `⏱ Expira en ${remaining}s`;
+      el.style.color = remaining < 30 ? '#e65100' : '#888';
+    }
   }
 }
 

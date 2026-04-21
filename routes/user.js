@@ -61,10 +61,12 @@ router.get('/status', async (req, res) => {
   res.json({
     connected: status.connected,
     qrAvailable: !!status.qr,
+    qr: status.qr || null,
     pairingCode: status.pairingCode,
     pairingCodeRequestedAt: status.pairingCodeRequestedAt,
     phoneNumber: status.phoneNumber,
     status: status.status,
+    usePairingCode: status.usePairingCode,
   });
 });
 
