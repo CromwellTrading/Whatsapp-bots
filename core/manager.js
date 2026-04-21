@@ -28,10 +28,15 @@ async function startUserInstance(userId, phoneNumber) {
   const cleanPhone = String(phoneNumber).replace(/\D/g, '');
   console.log(`[User ${userId}] 🚀 Iniciando instancia para ${cleanPhone} (${cleanPhone.length} dígitos)`);
 
-  // Cancelar timer previo si existe
+  // Cerrar instancia previa completamente antes de crear una nueva
   const existing = instances.get(userId);
-  if (existing?.reconnectTimer) {
-    clearTimeout(existing.reconnectTimer);
+  if (existing) {
+    if (existing.reconnectTimer) clearTimeout(existing.reconnectTimer);
+    if (existing.pairingTimer) clearTimeout(existing.pairingTimer);
+    try { existing.sock?.end(undefined); } catch (e) {}
+    instances.delete(userId);
+    // Pequeña pausa para que el socket anterior cierre limpiamente
+    await new Promise(r => setTimeout(r, 1000));
   }
 
   const sessionDir = path.join(AUTH_DIR, userId);
@@ -41,8 +46,6 @@ async function startUserInstance(userId, phoneNumber) {
   const { version } = await fetchLatestBaileysVersion();
   console.log(`[User ${userId}] 📦 Baileys version: ${version.join('.')}`);
 
-  // 🔥 CLAVE: Sin 'browser' personalizado y con defaultQueryTimeoutMs: undefined
-  // Replicando exactamente la configuración del proyecto que funciona
   const sock = makeWASocket({
     version,
     logger: pino({ level: 'silent' }),
@@ -54,7 +57,7 @@ async function startUserInstance(userId, phoneNumber) {
     },
     msgRetryCounterCache,
     generateHighQualityLinkPreview: true,
-    defaultQueryTimeoutMs: undefined, // 🔥 undefined, no 60000
+    defaultQueryTimeoutMs: undefined,
   });
 
   const instanceState = {
@@ -64,8 +67,10 @@ async function startUserInstance(userId, phoneNumber) {
     sock,
     qrBase64: null,
     pairingCode: null,
+    pairingCodeRequestedAt: null,
     isConnected: false,
     reconnectTimer: null,
+    pairingTimer: null,
   };
   instances.set(userId, instanceState);
 
@@ -140,29 +145,42 @@ async function startUserInstance(userId, phoneNumber) {
     await userBot.handleMessages(messages);
   });
 
-  // 🔥 CLAVE: Pedir el código FUERA del evento connection.update,
-  // con un setTimeout de 3s igual que el proyecto que funciona.
-  // Esto evita que WhatsApp consolide el flujo QR antes de recibir el request.
+  // Pedir código de emparejamiento tras conectar el socket (3s de espera para que se estabilice)
   if (!authState.creds.registered) {
     instanceState.status = 'qr_pending';
-    setTimeout(async () => {
+
+    const requestPairingCodeWithRetry = async (attempt = 1) => {
       const inst = instances.get(userId);
       if (!inst || inst.isConnected) return;
 
       try {
-        console.log(`[User ${userId}] 🔑 Solicitando código de emparejamiento para ${cleanPhone}...`);
-        console.log(`[User ${userId}]    creds.registered=${authState.creds.registered}`);
-        console.log(`[User ${userId}]    sock.authState.creds.me=${JSON.stringify(sock.authState?.creds?.me)}`);
+        console.log(`[User ${userId}] 🔑 Solicitando código de emparejamiento para +${cleanPhone} (intento ${attempt})...`);
+        inst.status = 'requesting_code';
+
         const code = await sock.requestPairingCode(cleanPhone);
         console.log(`[User ${userId}]    Respuesta raw de Baileys: ${code}`);
+
         const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
         inst.pairingCode = formattedCode;
-        console.log(`[User ${userId}] ✅ Código de emparejamiento: ${formattedCode}`);
+        inst.pairingCodeRequestedAt = Date.now();
+        inst.status = 'pairing';
+        console.log(`[User ${userId}] ✅ Código de emparejamiento listo: ${formattedCode}`);
       } catch (err) {
-        console.error(`[User ${userId}] ❌ Error pidiendo código:`, err?.message || err);
-        console.error(`[User ${userId}]    Error completo:`, JSON.stringify(err?.output || err));
+        console.error(`[User ${userId}] ❌ Error pidiendo código (intento ${attempt}):`, err?.message || err);
+
+        const inst = instances.get(userId);
+        if (inst && !inst.isConnected && attempt < 3) {
+          console.log(`[User ${userId}] 🔄 Reintentando en 5s...`);
+          inst.pairingTimer = setTimeout(() => requestPairingCodeWithRetry(attempt + 1), 5000);
+        } else if (inst) {
+          inst.status = 'error';
+          inst.pairingCode = null;
+          console.error(`[User ${userId}] ❌ No se pudo obtener el código tras ${attempt} intentos.`);
+        }
       }
-    }, 3000);
+    };
+
+    instanceState.pairingTimer = setTimeout(() => requestPairingCodeWithRetry(1), 3000);
   }
 
   return sock;
@@ -247,8 +265,9 @@ async function stopUserInstance(userId) {
   const instance = instances.get(userId);
   if (instance) {
     if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
+    if (instance.pairingTimer) clearTimeout(instance.pairingTimer);
     try {
-      instance.sock?.end();
+      instance.sock?.end(undefined);
     } catch (e) {}
     instances.delete(userId);
   }
@@ -261,6 +280,7 @@ function getUserStatus(userId) {
     connected: instance.isConnected,
     qr: instance.qrBase64,
     pairingCode: instance.pairingCode,
+    pairingCodeRequestedAt: instance.pairingCodeRequestedAt,
     phoneNumber: instance.phoneNumber,
     status: instance.status,
   };
@@ -331,7 +351,8 @@ async function clearAllSessions() {
     const instance = instances.get(userId);
     if (instance) {
       if (instance.reconnectTimer) clearTimeout(instance.reconnectTimer);
-      try { instance.sock?.end(); } catch (e) {}
+      if (instance.pairingTimer) clearTimeout(instance.pairingTimer);
+      try { instance.sock?.end(undefined); } catch (e) {}
     }
   }
   instances.clear();

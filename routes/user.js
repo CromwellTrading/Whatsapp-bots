@@ -62,6 +62,7 @@ router.get('/status', async (req, res) => {
     connected: status.connected,
     qrAvailable: !!status.qr,
     pairingCode: status.pairingCode,
+    pairingCodeRequestedAt: status.pairingCodeRequestedAt,
     phoneNumber: status.phoneNumber,
     status: status.status,
   });

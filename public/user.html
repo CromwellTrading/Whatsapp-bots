@@ -347,16 +347,19 @@
 
           <div id="pairingSection" style="display:none;">
             <div class="pairing-box">
-              <p style="font-size:0.9em; color:#666;">Tu código de vinculación:</p>
+              <p style="font-size:0.9em; color:#666; margin-bottom:4px;">Tu código de vinculación:</p>
               <div class="pairing-code" id="pairingCodeDisplay">—</div>
+              <p id="pairingExpiry" style="font-size:0.8em; color:#888; margin-bottom:12px;"></p>
               <div class="pairing-instructions">
+                <strong style="display:block; margin-bottom:8px; color:#d32f2f;">⚠️ Debes aceptar la notificación que llega a tu WhatsApp</strong>
                 1. Abre <strong>WhatsApp</strong> en tu teléfono<br>
-                2. Toca <strong>⋮ Más opciones → Dispositivos vinculados</strong><br>
-                3. Toca <strong>Vincular un dispositivo</strong><br>
-                4. Toca <strong>"Vincular con número de teléfono"</strong> (en vez de escanear QR)<br>
-                5. Ingresa tu número de teléfono completo<br>
-                6. Introduce el código de 8 dígitos que aparece arriba
+                2. Ve a <strong>⋮ → Dispositivos vinculados → Vincular dispositivo</strong><br>
+                3. Toca <strong>"Vincular con número de teléfono"</strong> (en vez de escanear QR)<br>
+                4. Ingresa tu número completo con código de país (ej: <strong>5312345678</strong>)<br>
+                5. WhatsApp te enviará una notificación — <strong>acéptala</strong><br>
+                6. Luego ingresa el código de 8 dígitos de arriba
               </div>
+              <button class="btn btn-gray btn-sm" style="margin-top:14px;" id="regenerateCodeBtn">🔄 Generar nuevo código</button>
             </div>
           </div>
 
@@ -687,6 +690,7 @@ function renderStatus(s) {
     pairingSection.style.display = 'block';
     const raw = s.pairingCode || '';
     document.getElementById('pairingCodeDisplay').textContent = raw.match(/.{1,4}/g)?.join('-') || raw;
+    updatePairingExpiry(s.pairingCodeRequestedAt);
     startStatusPoller();
   } else if (s.status === 'qr_pending' && s.qrAvailable) {
     badge.textContent = '🟡 Esperando vinculación';
@@ -724,6 +728,22 @@ function stopStatusPoller() {
   if (statusPollerInterval) { clearInterval(statusPollerInterval); statusPollerInterval = null; }
 }
 
+function updatePairingExpiry(requestedAt) {
+  const el = document.getElementById('pairingExpiry');
+  if (!el) return;
+  if (!requestedAt) { el.textContent = ''; return; }
+  // Los códigos de emparejamiento de WhatsApp expiran en 160 segundos
+  const expiresAt = requestedAt + 160 * 1000;
+  const remaining = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+  if (remaining === 0) {
+    el.textContent = '⏰ Código expirado — genera uno nuevo';
+    el.style.color = '#c62828';
+  } else {
+    el.textContent = `⏱ Expira en ${remaining}s`;
+    el.style.color = remaining < 30 ? '#e65100' : '#888';
+  }
+}
+
 // ---- CONNECT ----
 async function connectWithMethod(method) {
   try {
@@ -731,6 +751,7 @@ async function connectWithMethod(method) {
     await api('/restart', 'POST', { method });
     toast(method === 'pairing' ? 'Solicitando código, espera unos segundos...' : 'Generando QR...', 'info', 4000);
     setTimeout(loadStatus, 3000);
+    startStatusPoller();
   } catch (e) {
     toast(e.message, 'error');
     await loadStatus();
@@ -1041,6 +1062,7 @@ function setupEventListeners() {
   document.getElementById('refreshStatusBtn').onclick = loadStatus;
   document.getElementById('connectQR').onclick = () => connectWithMethod('qr');
   document.getElementById('connectCode').onclick = () => connectWithMethod('pairing');
+  document.getElementById('regenerateCodeBtn').onclick = () => connectWithMethod('pairing');
   document.getElementById('clearSessionBtn').onclick = async () => {
     if (!confirm('¿Desconectar y limpiar la sesión de WhatsApp?')) return;
     try {
