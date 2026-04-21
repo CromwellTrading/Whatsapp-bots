@@ -9,6 +9,8 @@ channel = "stable-25_05"
 
 [userenv.shared]
 PORT = "5000"
+SUPABASE_URL = "https://udvmarwjzvexzcumygmc.supabase.co"
+TZ = "America/Havana"
 
 [workflows]
 runButton = "Project"
