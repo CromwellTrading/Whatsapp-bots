@@ -78,9 +78,6 @@ async function startUserInstance(userId, phoneNumber) {
 
   sock.ev.on('creds.update', () => saveCreds());
 
-  // Flag para solicitar el código solo una vez por sesión
-  let pairingCodeRequested = false;
-
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
     const inst = instances.get(userId);
@@ -88,51 +85,16 @@ async function startUserInstance(userId, phoneNumber) {
 
     console.log(`[User ${userId}] 📡 connection.update: connection=${connection}, qr=${!!qr}`);
 
-    // El QR llega cuando WhatsApp confirma que el socket está activo y listo.
-    // Este es el momento EXACTO para pedir el código de emparejamiento,
-    // porque WA ya registró la sesión en sus servidores y enviará la notificación al teléfono.
-    if (qr && !authState.creds.registered && !pairingCodeRequested && !inst.isConnected) {
-      pairingCodeRequested = true;
-      inst.status = 'requesting_code';
-      console.log(`[User ${userId}] 📲 QR recibido — socket listo. Solicitando código de emparejamiento para +${cleanPhone}...`);
-
-      try {
-        const code = await sock.requestPairingCode(cleanPhone);
-        console.log(`[User ${userId}]    Respuesta raw de Baileys: ${code}`);
-        const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
-        const currentInst = instances.get(userId);
-        if (currentInst) {
-          currentInst.pairingCode = formattedCode;
-          currentInst.pairingCodeRequestedAt = Date.now();
-          currentInst.status = 'pairing';
-          currentInst.qrBase64 = null; // No mostrar QR, solo el código
-        }
-        console.log(`[User ${userId}] ✅ Código listo: ${formattedCode} — Notificación enviada al teléfono.`);
-      } catch (err) {
-        console.error(`[User ${userId}] ❌ Error pidiendo código:`, err?.message || err);
-        pairingCodeRequested = false; // Permitir reintento en el próximo QR
-        const currentInst = instances.get(userId);
-        if (currentInst) {
-          currentInst.status = 'qr_pending';
-          // Guardar QR como fallback para el usuario
-          try { currentInst.qrBase64 = await QRCode.toDataURL(qr); } catch (_) {}
-        }
-      }
-    } else if (qr && !pairingCodeRequested) {
-      // Si ya se registró (reconnect) o ya se pidió el código, guardar QR como fallback
-      try {
-        const currentInst = instances.get(userId);
-        if (currentInst) currentInst.qrBase64 = await QRCode.toDataURL(qr);
-      } catch (_) {}
+    // Ignoramos el QR — usamos código de emparejamiento, no QR
+    if (qr) {
+      console.log(`[User ${userId}] ⚠️ QR recibido — ignorado (modo código de emparejamiento)`);
     }
 
     if (connection === 'open') {
-      const currentInst = instances.get(userId);
-      if (!currentInst) return;
-      currentInst.isConnected = true;
-      currentInst.qrBase64 = null;
-      currentInst.pairingCode = null;
-      currentInst.status = 'connected';
+      inst.isConnected = true;
+      inst.qrBase64 = null;
+      inst.pairingCode = null;
+      inst.status = 'connected';
       console.log(`[User ${userId}] ✅ Conectado a WhatsApp`);
 
       const settings = await getSettings(userId);
@@ -153,10 +115,8 @@ async function startUserInstance(userId, phoneNumber) {
 
       console.log(`[User ${userId}] ❌ Conexión cerrada. statusCode=${statusCode} isLoggedOut=${isLoggedOut}`);
 
-      const currentInst = instances.get(userId);
-      if (!currentInst) return;
-      currentInst.isConnected = false;
-      currentInst.status = 'disconnected';
+      inst.isConnected = false;
+      inst.status = 'disconnected';
 
       if (isLoggedOut) {
         console.log(`[User ${userId}] 🗑️ Logout explícito. Eliminando sesión.`);
@@ -165,7 +125,7 @@ async function startUserInstance(userId, phoneNumber) {
         }
       } else {
         console.log(`[User ${userId}] 🔄 Reconectando en 5s...`);
-        currentInst.reconnectTimer = setTimeout(() => {
+        inst.reconnectTimer = setTimeout(() => {
           reconnectUserInstance(userId, cleanPhone, sessionDir);
         }, 5000);
       }
@@ -175,6 +135,52 @@ async function startUserInstance(userId, phoneNumber) {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     await userBot.handleMessages(messages);
   });
+
+  // Solicitar código de emparejamiento — misma lógica del proyecto de referencia que funciona:
+  // Esperar 3s para que el socket se inicialice, luego pedir el código.
+  // IMPORTANTE: usar sock.authState.creds.registered (estado VIVO del socket),
+  // NO la variable authState capturada antes — puede estar desactualizada.
+  if (!authState.creds.registered) {
+    instanceState.status = 'requesting_code';
+    instanceState.pairingTimer = setTimeout(async () => {
+      const inst = instances.get(userId);
+      if (!inst || inst.isConnected) return;
+
+      try {
+        // Verificar con el estado vivo del socket, igual que el proyecto de referencia
+        if (!sock.authState.creds.registered) {
+          console.log(`[User ${userId}] 🔑 Solicitando código para +${cleanPhone} (${cleanPhone.length} dígitos)...`);
+          console.log(`[User ${userId}]    sock.authState.creds.registered = ${sock.authState.creds.registered}`);
+
+          // Advertencia si el número parece no tener código de país
+          if (cleanPhone.length < 10) {
+            console.warn(`[User ${userId}] ⚠️ ADVERTENCIA: El número tiene solo ${cleanPhone.length} dígitos. Probablemente le falta el código de país (ej: Cuba=53, España=34, México=52). Número guardado en Supabase: ${phoneNumber}`);
+          } else {
+            console.log(`[User ${userId}]    Número parece correcto (${cleanPhone.length} dígitos)`);
+          }
+
+          const code = await sock.requestPairingCode(cleanPhone);
+          console.log(`[User ${userId}]    Código raw de Baileys: ${code}`);
+
+          const formattedCode = code?.match(/.{1,4}/g)?.join('-') ?? code;
+          const currentInst = instances.get(userId);
+          if (currentInst) {
+            currentInst.pairingCode = formattedCode;
+            currentInst.pairingCodeRequestedAt = Date.now();
+            currentInst.status = 'pairing';
+          }
+          console.log(`[User ${userId}] ✅ Código listo: ${formattedCode}`);
+        } else {
+          console.log(`[User ${userId}] ℹ️ Sesión ya activa en el socket, no se necesita código`);
+          if (inst) inst.status = 'connecting';
+        }
+      } catch (err) {
+        console.error(`[User ${userId}] ❌ Error al pedir código:`, err?.message || err);
+        const currentInst = instances.get(userId);
+        if (currentInst) currentInst.status = 'disconnected';
+      }
+    }, 3000);
+  }
 
   return sock;
 }
